@@ -275,6 +275,11 @@ static struct policy *to_policy(struct dm_cache_policy *p)
 	return container_of(p, struct policy, policy);
 }
 
+static int to_rw(struct bio *bio)
+{
+	return (bio_data_dir(bio) == WRITE) ? 1 : 0;
+}
+
 /*----------------------------------------------------------------------------*/
 /* Low-level queue functions. */
 static void queue_init(struct list_head *q)
@@ -1139,7 +1144,7 @@ static void update_cache_entry(struct policy *p, struct basic_cache_entry *e,
 	if (IS_DUMB(p) || IS_NOOP(p))
 		return;
 
-	rw = (bio_data_dir(bio) == WRITE ? 1 : 0);
+	rw = to_rw(bio);
 
 	e->ce.count[T_HITS][rw]++;
 	e->ce.count[T_SECTORS][rw] += bio_sectors(bio);
@@ -1157,7 +1162,7 @@ static void update_cache_entry(struct policy *p, struct basic_cache_entry *e,
 static void get_cache_block(struct policy *p, dm_oblock_t oblock, struct bio *bio,
 			    struct policy_result *result)
 {
-	int rw = (bio_data_dir(bio) == WRITE ? 1 : 0);
+	int rw = to_rw(bio);
 	struct basic_cache_entry *e;
 
 	if (queue_empty(&p->queues.free)) {
@@ -1211,10 +1216,26 @@ static void get_cache_block(struct policy *p, dm_oblock_t oblock, struct bio *bi
 	add_cache_entry(p, e);
 }
 
-static bool is_promotion_candidate(struct policy *p,
-				   struct track_queue_entry *tqe,
-				   bool discarded_oblock, int rw)
+static bool in_cache(struct policy *p, dm_block_t oblock, struct bio *bio, struct policy_result *result)
 {
+	struct basic_cache_entry *e = lookup_cache_entry(p, oblock);
+
+	if (e) {
+		/* Cache hit: update entry on queues, increment its hit count */
+		update_cache_entry(p, e, bio, result);
+		return true;
+	}
+
+	return false;
+}
+
+static bool should_promote(struct policy *p, struct track_queue_entry *tqe,
+			   dm_oblock_t oblock, int rw, bool discarded_oblock,
+			   struct policy_result *result)
+{
+	BUG_ON(!tqe);
+	calc_rw_threshold(p);
+
 	if (discarded_oblock && any_free_cblocks(p))
 		/*
 		 * We don't need to do any copying at all, so give this a
@@ -1224,18 +1245,6 @@ static bool is_promotion_candidate(struct policy *p,
 		return true;
 
 	return tqe->ce.count[p->queues.ctype][rw] >= p->promote_threshold[rw];
-}
-
-static bool should_promote(struct policy *p, dm_oblock_t oblock,
-			   bool discarded_oblock, struct bio *bio,
-			   struct policy_result *result)
-{
-	int rw = (bio_data_dir(bio) == WRITE ? 1 : 0);
-	struct track_queue_entry *tqe = update_track_queue(p, &p->queues.pre,
-							   oblock, rw, 1,
-							   bio_sectors(bio));
-	calc_rw_threshold(p);
-	return is_promotion_candidate(p, tqe, discarded_oblock, rw);
 }
 
 static void map_prerequisites(struct policy *p, struct bio *bio)
@@ -1250,26 +1259,29 @@ static void map_prerequisites(struct policy *p, struct bio *bio)
 }
 
 static int map(struct policy *p, dm_oblock_t oblock,
-	       bool can_migrate, bool discarded_oblock,
+	       bool can_block, bool can_migrate, bool discarded_oblock,
 	       struct bio *bio, struct policy_result *result)
 {
-	struct basic_cache_entry *e;
+	int rw = to_rw(bio);
+	struct track_queue_entry *tqe;
 
 	if (IS_NOOP(p))
 		return 0;
 
-	e = lookup_cache_entry(p, oblock);
-	if (e)
-		/* Cache hit: update entry on queues, increment its hit count */
-		update_cache_entry(p, e, bio, result);
+	if (in_cache(p, oblock, bio, result))
+		return 0;
 
-	else if (!can_migrate)
+	if (!IS_DUMB(p))
+		/* Record hits on pre cache track queue. */
+		tqe = update_track_queue(p, &p->queues.pre, oblock, rw, 1, bio_sectors(bio));
+
+	if (!can_migrate)
 		return -EWOULDBLOCK;
 
 	else if (!IS_DUMB(p) && iot_sequential_pattern(&p->tracker))
 		;
 
-	else if (IS_DUMB(p) || should_promote(p, oblock, discarded_oblock, bio, result))
+	else if (IS_DUMB(p) || should_promote(p, tqe, oblock, rw, discarded_oblock, result))
 		get_cache_block(p, oblock, bio, result);
 
 	return 0;
@@ -1294,7 +1306,7 @@ static int basic_map(struct dm_cache_policy *pe, dm_oblock_t oblock,
 	if (!IS_DUMB(p) && !IS_NOOP(p))
 		map_prerequisites(p, bio);
 
-	r = map(p, oblock, can_migrate, discarded_oblock, bio, result);
+	r = map(p, oblock, can_block, can_migrate, discarded_oblock, bio, result);
 
 	mutex_unlock(&p->lock);
 
