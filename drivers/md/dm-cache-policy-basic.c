@@ -610,7 +610,7 @@ static void init_promote_threshold(struct policy *p, bool cache_full)
 
 	if (cache_full) {
 		p->promote_threshold[0] += ((p->cache_count[p->queues.ctype][0] * READ_PROMOTE_THRESHOLD) << 5) / from_cblock(p->cache_size);
-		p->promote_threshold[1] += ((p->cache_count[p->queues.ctype][1] * WRITE_PROMOTE_THRESHOLD)<< 5) / from_cblock(p->cache_size);
+		p->promote_threshold[1] += ((p->cache_count[p->queues.ctype][1] * WRITE_PROMOTE_THRESHOLD)<< 6) / from_cblock(p->cache_size);
 	}
 }
 
@@ -1091,6 +1091,9 @@ static void add_cache_entry(struct policy *p, struct basic_cache_entry *e)
 	alloc_cblock(p, e->cblock);
 	insert_cache_hash_entry(p, e);
 
+	if (IS_DUMB(p) || IS_NOOP(p))
+		return;
+
 	for (t = 0; t < end; t++)
 		for (u = 0; u < end; u++)
 			p->cache_count[t][u] += e->ce.count[t][u];
@@ -1102,6 +1105,9 @@ static void remove_cache_entry(struct policy *p, struct basic_cache_entry *e)
 
 	remove_cache_hash_entry(p, e);
 	free_cblock(p, e->cblock);
+
+	if (IS_DUMB(p) || IS_NOOP(p))
+		return;
 
 	for (t = 0; t < end; t++)
 		for (u = 0; u < end; u++)
@@ -1130,7 +1136,7 @@ static void update_cache_entry(struct policy *p, struct basic_cache_entry *e,
 	result->op = POLICY_HIT;
 	result->cblock = e->cblock;
 
-	if (IS_DUMB(p))
+	if (IS_DUMB(p) || IS_NOOP(p))
 		return;
 
 	rw = (bio_data_dir(bio) == WRITE ? 1 : 0);
@@ -1263,8 +1269,7 @@ static int map(struct policy *p, dm_oblock_t oblock,
 	else if (!IS_DUMB(p) && iot_sequential_pattern(&p->tracker))
 		;
 
-	else if (IS_DUMB(p) ||
-		 should_promote(p, oblock, discarded_oblock, bio, result))
+	else if (IS_DUMB(p) || should_promote(p, oblock, discarded_oblock, bio, result))
 		get_cache_block(p, oblock, bio, result);
 
 	return 0;
