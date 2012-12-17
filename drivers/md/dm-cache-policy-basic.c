@@ -1406,6 +1406,8 @@ static void sort_in_cache_entry(struct policy *p, struct basic_cache_entry *e)
 		list_add_tail(&e->ce.list, elt);
 	else
 		list_add(&e->ce.list, elt);
+
+	queue_add_tail(&p->queues.walk, &e->walk);
 }
 
 static int basic_load_mapping(struct dm_cache_policy *pe,
