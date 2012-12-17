@@ -1088,11 +1088,10 @@ static int find_free_cblock(struct policy *p, dm_cblock_t *result)
 	return r;
 }
 
-static void add_cache_entry(struct policy *p, struct basic_cache_entry *e)
+static void alloc_cblock_insert_cache_and_count_entry(struct policy *p, struct basic_cache_entry *e)
 {
 	unsigned t, u, end = ARRAY_SIZE(e->ce.count[T_HITS]);
 
-	p->queues.fns->add(p, &e->ce.list);
 	alloc_cblock(p, e->cblock);
 	insert_cache_hash_entry(p, e);
 
@@ -1102,6 +1101,12 @@ static void add_cache_entry(struct policy *p, struct basic_cache_entry *e)
 	for (t = 0; t < end; t++)
 		for (u = 0; u < end; u++)
 			p->cache_count[t][u] += e->ce.count[t][u];
+}
+
+static void add_cache_entry(struct policy *p, struct basic_cache_entry *e)
+{
+	p->queues.fns->add(p, &e->ce.list);
+	alloc_cblock_insert_cache_and_count_entry(p, e);
 }
 
 static void remove_cache_entry(struct policy *p, struct basic_cache_entry *e)
@@ -1428,19 +1433,24 @@ static int basic_load_mapping(struct dm_cache_policy *pe,
 		unsigned reads, writes;
 
 		hint_to_counts(hint, &reads, &writes);
+		e->ce.count[T_HITS][0] = reads;
+		e->ce.count[T_HITS][1] = writes;
 
 		if (IS_MULTIQUEUE(p) || IS_TWOQUEUE(p) || IS_LFU_MFU_WS(p)) {
 			/* FIXME: store also in larger hints rather than making up. */
-			e->ce.count[T_HITS][0] = reads;
-			e->ce.count[T_HITS][1] = writes;
 			e->ce.count[T_SECTORS][0] = reads << p->block_shift;
 			e->ce.count[T_SECTORS][1] = writes << p->block_shift;
-			add_cache_entry(p, e);
-			p->nr_cblocks_allocated = to_cblock(from_cblock(p->nr_cblocks_allocated) + 1);
-
-		} else
-			sort_in_cache_entry(p, e);
+		}
 	}
+
+	if (IS_MULTIQUEUE(p) || IS_TWOQUEUE(p) || IS_LFU_MFU_WS(p))
+		add_cache_entry(p, e);
+	else {
+		sort_in_cache_entry(p, e);
+		alloc_cblock_insert_cache_and_count_entry(p, e);
+	}
+
+	p->nr_cblocks_allocated = to_cblock(from_cblock(p->nr_cblocks_allocated) + 1);
 
 	return 0;
 }
