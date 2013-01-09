@@ -128,7 +128,7 @@ struct cache {
 	dm_cblock_t cache_size;
 
 	/*
-	 * Fields for converting from sectors to blocks.
+	 * Fields for converting from sectors to blocks etc.
 	 */
 	sector_t sectors_per_block;
 	int sectors_per_block_shift;
@@ -800,6 +800,8 @@ static void issue_copy(struct dm_cache_migration *mg)
 	if (mg->writeback || mg->demote)
 		avoid = !is_dirty(cache, mg->cblock) ||
 			is_discarded_oblock(cache, mg->old_oblock);
+	else if (!mg->promote)
+		avoid = true;
 	else
 		avoid = is_discarded_oblock(cache, mg->new_oblock);
 
@@ -884,14 +886,14 @@ static void quiesce_migration(struct dm_cache_migration *mg)
 
 static void promote(struct cache *cache, struct prealloc *structs,
 		    dm_oblock_t oblock, dm_cblock_t cblock,
-		    struct dm_bio_prison_cell *cell)
+		    struct dm_bio_prison_cell *cell, struct bio *bio)
 {
 	struct dm_cache_migration *mg = prealloc_get_migration(structs);
 
 	mg->err = false;
 	mg->writeback = false;
 	mg->demote = false;
-	mg->promote = true;
+	mg->promote = (bio_sectors(bio) == cache->sectors_per_block) ? false : true;
 	mg->cache = cache;
 	mg->new_oblock = oblock;
 	mg->cblock = cblock;
@@ -928,14 +930,15 @@ static void demote_then_promote(struct cache *cache, struct prealloc *structs,
 				dm_oblock_t old_oblock, dm_oblock_t new_oblock,
 				dm_cblock_t cblock,
 				struct dm_bio_prison_cell *old_ocell,
-				struct dm_bio_prison_cell *new_ocell)
+				struct dm_bio_prison_cell *new_ocell,
+				struct bio *bio)
 {
 	struct dm_cache_migration *mg = prealloc_get_migration(structs);
 
 	mg->err = false;
 	mg->writeback = false;
 	mg->demote = true;
-	mg->promote = true;
+	mg->promote = (bio_sectors(bio) == cache->sectors_per_block) ? false : true;
 	mg->cache = cache;
 	mg->old_oblock = old_oblock;
 	mg->new_oblock = new_oblock;
@@ -1093,7 +1096,7 @@ static void process_bio(struct cache *cache, struct prealloc *structs,
 
 	case POLICY_NEW:
 		atomic_inc(&cache->stats.promotion);
-		promote(cache, structs, block, lookup_result.cblock, new_ocell);
+		promote(cache, structs, block, lookup_result.cblock, new_ocell, bio);
 		release_cell = false;
 		break;
 
@@ -1118,7 +1121,7 @@ static void process_bio(struct cache *cache, struct prealloc *structs,
 
 		demote_then_promote(cache, structs, lookup_result.old_oblock,
 				    block, lookup_result.cblock,
-				    old_ocell, new_ocell);
+				    old_ocell, new_ocell, bio);
 		release_cell = false;
 		break;
 
