@@ -24,7 +24,6 @@ struct wb_cache_entry {
 	dm_oblock_t oblock;
 	dm_cblock_t cblock;
 	bool dirty:1;
-	bool pending:1;
 };
 
 struct hash {
@@ -236,7 +235,6 @@ static void __set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bo
 
 	} else {
 		if (e->dirty) {
-			e->pending = false;
 			e->dirty = false;
 			list_move(&e->list, &p->clean);
 		}
@@ -415,6 +413,7 @@ static void init_policy_functions(struct policy *p)
 	p->policy.walk_mappings = NULL;
 	p->policy.remove_mapping = wb_remove_mapping;
 	p->policy.writeback_work = wb_writeback_work;
+	p->policy.next_dirty_block = NULL;
 	p->policy.force_mapping = wb_force_mapping;
 	p->policy.residency = wb_residency;
 	p->policy.tick = NULL;
