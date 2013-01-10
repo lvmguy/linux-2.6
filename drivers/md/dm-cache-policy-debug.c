@@ -584,25 +584,41 @@ static void debug_force_mapping(struct dm_cache_policy *pe,
 	mutex_unlock(&p->lock);
 }
 
+static void analyze_result(const char *caller, struct policy *p, int r, dm_oblock_t *oblock, dm_cblock_t *cblock)
+{
+	if (r) {
+		if (r != -ENOENT)
+			DMWARN("%s return code %d invalid!", caller, r);
+
+	} else {
+		if (from_cblock(*cblock) >= from_cblock(p->cache_blocks))
+			DMWARN("%s cblock=%u invalid!", caller, from_cblock(*cblock));
+
+		if (from_oblock(*oblock) >= from_oblock(p->origin_blocks))
+			DMWARN("%s cblock=%llu invalid!", caller, (LLU) from_oblock(*oblock));
+	}
+}
+
 static int debug_writeback_work(struct dm_cache_policy *pe,
 				dm_oblock_t *oblock,
 				dm_cblock_t *cblock)
 {
-	int r;
 	struct policy *p = to_policy(pe);
+	int r = policy_writeback_work(p->debug_policy, oblock, cblock);
 
-	r = policy_writeback_work(p->debug_policy, oblock, cblock);
-	if (r) {
-		if (r != -ENOENT)
-			DMWARN("remove_any return code %d invalid!", r);
+	analyze_result("writeback_work", p, r, oblock, cblock);
 
-	} else {
-		if (from_cblock(*cblock) >= from_cblock(p->cache_blocks))
-			DMWARN("remove_any cbock=%u invalid!", from_cblock(*cblock));
+	return r;
+}
 
-		if (from_oblock(*oblock) >= from_oblock(p->origin_blocks))
-			DMWARN("remove_any cbock=%llu invalid!", (LLU) from_oblock(*oblock));
-	}
+static int debug_next_dirty_block(struct dm_cache_policy *pe,
+				  dm_oblock_t *oblock,
+				  dm_cblock_t *cblock)
+{
+	struct policy *p = to_policy(pe);
+	int r = policy_next_dirty_block(p->debug_policy, oblock, cblock);
+
+	analyze_result("next_dirty_block", p, r, oblock, cblock);
 
 	return r;
 }
@@ -662,6 +678,7 @@ static void init_policy_functions(struct policy *p)
 	p->policy.remove_mapping = debug_remove_mapping;
 	p->policy.force_mapping = debug_force_mapping;
 	p->policy.writeback_work = debug_writeback_work;
+	p->policy.next_dirty_block = debug_next_dirty_block;
 	p->policy.residency = debug_residency;
 	p->policy.tick = debug_tick;
 	p->policy.status = debug_status;
