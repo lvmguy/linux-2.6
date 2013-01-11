@@ -39,6 +39,11 @@ static inline void policy_clear_dirty(struct dm_cache_policy *p, dm_oblock_t obl
 		p->clear_dirty(p, oblock);
 }
 
+static inline int policy_is_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
+{
+	return p->is_dirty ? p->is_dirty(p, oblock) : -EOPNOTSUPP;
+}
+
 static inline int policy_load_mapping(struct dm_cache_policy *p,
 				      dm_oblock_t oblock, dm_cblock_t cblock,
 				      uint32_t hint, bool hint_valid)
