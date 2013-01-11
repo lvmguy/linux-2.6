@@ -1453,15 +1453,10 @@ static void _set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, boo
 
 	e = lookup_cache_entry(p, oblock);
 	BUG_ON(!e);
+	queue_del(&e->dirty);
 
-	if (dirty) {
-		if (!list_empty(&e->dirty))
-			list_del(&e->dirty);
-
+	if (dirty)
 		add_dirty_entry(p, e); 
-
-	} else
-		queue_del(&e->dirty);
 
 	mutex_unlock(&p->lock);
 }
@@ -1822,21 +1817,21 @@ static struct dm_cache_policy *basic_policy_create(dm_cblock_t cache_size,
 	unsigned mqueues = 0;
 	static struct queue_fns queue_fns[] = {
 		/* These have to be in 'enum policy_type' order! */
-		{ &queue_add_dumb,	    &queue_del_default,	   &queue_evict_default },	/* P_dumb */
-		{ &queue_add_default_tail,  &queue_del_fifo_filo,  &queue_evict_default },	/* P_fifo */
-		{ &queue_add_filo_mru,      &queue_del_fifo_filo,  &queue_evict_default },	/* P_filo */
-		{ &queue_add_default_tail,  &queue_del_default,    &queue_evict_default },	/* P_lru */
-		{ &queue_add_filo_mru,      &queue_del_default,    &queue_evict_default },	/* P_mru */
-		{ &queue_add_lfu,           &queue_del_lfu,	   &queue_evict_lfu_mfu },	/* P_lfu */
-		{ &queue_add_lfu_ws,        &queue_del_lfu,	   &queue_evict_lfu_mfu },	/* P_lfu_ws */
-		{ &queue_add_mfu,           &queue_del_mfu,	   &queue_evict_lfu_mfu },	/* P_mfu */
-		{ &queue_add_mfu_ws,        &queue_del_mfu,	   &queue_evict_lfu_mfu },	/* P_mfu_ws */
-		{ &queue_add_multiqueue,    &queue_del_multiqueue, &queue_evict_multiqueue },	/* P_multiqueue */
-		{ &queue_add_multiqueue_ws, &queue_del_multiqueue, &queue_evict_multiqueue },	/* P_multiqueue_ws */
-		{ &queue_add_noop,	    NULL,		   NULL },			/* P_noop */
-		{ &queue_add_default_tail,  &queue_del_default,    &queue_evict_random },	/* P_random */
-		{ &queue_add_q2,            &queue_del_multiqueue, &queue_evict_q2_twoqueue },	/* P_q2 */
-		{ &queue_add_twoqueue,      &queue_del_multiqueue, &queue_evict_q2_twoqueue },	/* P_twoqueue */
+		{ &queue_add_dumb,	    &queue_del_default,		&queue_evict_default },		/* P_dumb */
+		{ &queue_add_default_tail,  &queue_del_fifo_filo,	&queue_evict_default },		/* P_fifo */
+		{ &queue_add_filo_mru,      &queue_del_fifo_filo,	&queue_evict_default },		/* P_filo */
+		{ &queue_add_default_tail,  &queue_del_default,		&queue_evict_default },		/* P_lru */
+		{ &queue_add_filo_mru,      &queue_del_default,		&queue_evict_default },		/* P_mru */
+		{ &queue_add_lfu,           &queue_del_lfu,		&queue_evict_lfu_mfu },		/* P_lfu */
+		{ &queue_add_lfu_ws,        &queue_del_lfu,		&queue_evict_lfu_mfu },		/* P_lfu_ws */
+		{ &queue_add_mfu,           &queue_del_mfu,		&queue_evict_lfu_mfu },		/* P_mfu */
+		{ &queue_add_mfu_ws,        &queue_del_mfu,		&queue_evict_lfu_mfu },		/* P_mfu_ws */
+		{ &queue_add_multiqueue,    &queue_del_multiqueue,	&queue_evict_multiqueue },	/* P_multiqueue */
+		{ &queue_add_multiqueue_ws, &queue_del_multiqueue,	&queue_evict_multiqueue },	/* P_multiqueue_ws */
+		{ &queue_add_noop,	    NULL,			NULL },				/* P_noop */
+		{ &queue_add_default_tail,  &queue_del_default,		&queue_evict_random },		/* P_random */
+		{ &queue_add_q2,            &queue_del_multiqueue,	&queue_evict_q2_twoqueue },	/* P_q2 */
+		{ &queue_add_twoqueue,      &queue_del_multiqueue,	&queue_evict_q2_twoqueue },	/* P_twoqueue */
 	};
 	struct policy *p = kzalloc(sizeof(*p), GFP_KERNEL);
 
