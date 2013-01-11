@@ -372,6 +372,7 @@ static int alloc_cache_blocks_with_hash(struct policy *p, unsigned cache_size)
 		if (!e)
 			goto bad_cache_alloc;
 
+		queue_init(&e->dirty);
 		queue_add(&p->queues.free, &e->ce.list);
 	}
 
@@ -1239,7 +1240,7 @@ static void get_cache_block(struct policy *p, dm_oblock_t oblock, struct bio *bi
 
 	result->cblock = e->cblock;
 	e->ce.oblock = oblock;
-	queue_init(&e->dirty);
+	queue_del(&e->dirty);
 	add_cache_entry(p, e);
 }
 
