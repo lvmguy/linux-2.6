@@ -79,12 +79,13 @@ static void background_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t obloc
 	int r;
 	struct policy *p = to_policy(pe);
 
-	BUG_ON(!atomic_read(&p->nr_dirty));
 
 	r = policy_is_dirty(p->real_policy, oblock);
 	BUG_ON(r < 0);
-	if (r)
+	if (r) {
+		BUG_ON(!atomic_read(&p->nr_dirty));
 		atomic_dec(&p->nr_dirty);
+	}
 
 	policy_clear_dirty(p->real_policy, oblock);
 }
