@@ -1453,15 +1453,10 @@ static void _set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, boo
 
 	e = lookup_cache_entry(p, oblock);
 	BUG_ON(!e);
+	queue_del(&e->dirty);
 
-	if (dirty) {
-		if (!list_empty(&e->dirty))
-			list_del(&e->dirty);
-
+	if (dirty)
 		add_dirty_entry(p, e); 
-
-	} else
-		queue_del(&e->dirty);
 
 	mutex_unlock(&p->lock);
 }
