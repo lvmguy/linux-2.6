@@ -142,6 +142,11 @@ struct dm_cache_policy {
 	void (*clear_dirty)(struct dm_cache_policy *p, dm_oblock_t oblock);
 
 	/*
+	 * oblock must be a mapped block.  May block!
+	 */
+	int (*is_dirty)(struct dm_cache_policy *p, dm_oblock_t oblock);
+
+	/*
 	 * Called when a cache target is first created.  Used to load a
 	 * mapping from the metadata device into the policy.
 	 */

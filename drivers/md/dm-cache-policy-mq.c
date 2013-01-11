@@ -352,6 +352,7 @@ static int alloc_entries(struct mq_policy *mq, unsigned elts)
 		}
 
 
+		INIT_LIST_HEAD(&e->dirty);
 		list_add(&e->list, &mq->free);
 	}
 
@@ -966,6 +967,21 @@ static void mq_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 	_set_clear_dirty(p, oblock, false);
 }
 
+static int mq_is_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
+{
+	int r;
+	struct mq_policy *mq = to_mq_policy(p);
+	struct entry *e;
+
+	mutex_lock(&mq->lock);
+	e = hash_lookup(mq, oblock);
+	BUG_ON(!e);
+	r = !list_empty(&e->dirty);
+	mutex_unlock(&mq->lock);
+
+	return r;
+}
+
 static int mq_load_mapping(struct dm_cache_policy *p,
 			   dm_oblock_t oblock, dm_cblock_t cblock,
 			   uint32_t hint, bool hint_valid)
@@ -1036,7 +1052,7 @@ static int mq_next_dirty_block(struct dm_cache_policy *p, dm_oblock_t *oblock, d
 	mutex_lock(&mq->lock);
 
 	if (!list_empty(&mq->dirty)) {
-		struct entry *e = list_first_entry(&mq->dirty, struct entry, list);
+		struct entry *e = list_first_entry(&mq->dirty, struct entry, dirty);
 
 		list_del_init(&e->dirty);
 		*oblock = e->oblock;
@@ -1180,6 +1196,7 @@ static void init_policy_functions(struct mq_policy *mq)
 	mq->policy.lookup = mq_lookup;
 	mq->policy.set_dirty = mq_set_dirty;
 	mq->policy.clear_dirty = mq_clear_dirty;
+	mq->policy.is_dirty = mq_is_dirty;
 	mq->policy.load_mapping = mq_load_mapping;
 	mq->policy.walk_mappings = mq_walk_mappings;
 	mq->policy.remove_mapping = mq_remove_mapping;

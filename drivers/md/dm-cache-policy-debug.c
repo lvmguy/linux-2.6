@@ -483,6 +483,36 @@ static int debug_lookup(struct dm_cache_policy *pe, dm_oblock_t oblock, dm_cbloc
 	return r;
 }
 
+static void debug_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
+{
+	policy_set_dirty(to_policy(pe)->debug_policy, oblock);
+}
+
+static void debug_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
+{
+	policy_clear_dirty(to_policy(pe)->debug_policy, oblock);
+}
+
+static int debug_is_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
+{
+	int r;
+	struct policy *p = to_policy(pe);
+
+	r = policy_is_dirty(p->debug_policy, oblock);
+	switch (r) {
+	case 0:
+	case 1:
+	case -EOPNOTSUPP:
+		break;
+
+	default:
+		DMWARN("is_dirty invalid return=%d", r);
+	}
+
+	return r;
+}
+
+
 static void debug_destroy(struct dm_cache_policy *pe)
 {
 	struct policy *p = to_policy(pe);
@@ -673,6 +703,9 @@ static void init_policy_functions(struct policy *p)
 	p->policy.destroy = debug_destroy;
 	p->policy.map = debug_map;
 	p->policy.lookup = debug_lookup;
+	p->policy.set_dirty = debug_set_dirty;
+	p->policy.clear_dirty = debug_clear_dirty;
+	p->policy.is_dirty = debug_is_dirty;
 	p->policy.load_mapping = debug_load_mapping;
 	p->policy.walk_mappings = debug_walk_mappings;
 	p->policy.remove_mapping = debug_remove_mapping;

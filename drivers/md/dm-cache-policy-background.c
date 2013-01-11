@@ -23,7 +23,8 @@ struct policy {
 	struct mutex lock;
 
 	struct dm_cache_policy *real_policy;
-	dm_cblock_t cache_blocks, threshold, threshold_arg;
+	dm_cblock_t cache_blocks, threshold;
+	int threshold_arg;
 	atomic_t nr_dirty;
 };
 
@@ -60,18 +61,32 @@ static int background_lookup(struct dm_cache_policy *pe, dm_oblock_t oblock, dm_
 
 static void background_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
 {
+	int r;
 	struct policy *p = to_policy(pe);
 
 	BUG_ON(atomic_read(&p->nr_dirty) > p->cache_blocks);
-	atomic_inc(&p->nr_dirty);
+
+	r = policy_is_dirty(p->real_policy, oblock);
+	BUG_ON(r < 0);
+	if (!r)
+		atomic_inc(&p->nr_dirty);
+
+	policy_set_dirty(p->real_policy, oblock);
 }
 
 static void background_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
 {
+	int r;
 	struct policy *p = to_policy(pe);
 
-	BUG_ON(atomic_read(&p->nr_dirty) > p->cache_blocks);
-	atomic_dec(&p->nr_dirty);
+	BUG_ON(!atomic_read(&p->nr_dirty));
+
+	r = policy_is_dirty(p->real_policy, oblock);
+	BUG_ON(r < 0);
+	if (r)
+		atomic_dec(&p->nr_dirty);
+
+	policy_clear_dirty(p->real_policy, oblock);
 }
 
 static int background_load_mapping(struct dm_cache_policy *pe,
@@ -98,22 +113,28 @@ static void background_force_mapping(struct dm_cache_policy *pe,
 }
 
 static int background_writeback_work(struct dm_cache_policy *pe,
-				     dm_oblock_t *oblock,
-				     dm_cblock_t *cblock)
+				     dm_oblock_t *oblock, dm_cblock_t *cblock)
 {
 	int r;
 	struct policy *p = to_policy(pe);
 
+	mutex_lock(&p->lock);
+
 	BUG_ON(atomic_read(&p->nr_dirty) > p->cache_blocks);
 
-	if (p->cache_blocks - atomic_read(&p->nr_dirty) > p->threshold)
-		return -ENOENT;
+	if (p->cache_blocks - atomic_read(&p->nr_dirty) >= p->threshold) {
+		r = -ENOENT;
+		goto unlock;
+	}
 
 	r = policy_next_dirty_block(p->real_policy, oblock, cblock);
 	if (!r) {
 		BUG_ON(!atomic_read(&p->nr_dirty));
 		atomic_dec(&p->nr_dirty);
 	}
+
+unlock:
+	mutex_unlock(&p->lock);
 
 	return r;
 }
@@ -128,7 +149,7 @@ static void background_tick(struct dm_cache_policy *pe)
 	policy_tick(to_policy(pe)->real_policy);
 }
 
-static const char *threshold_string = "clean_blocks_threshold";
+static const char *threshold_string = "clean_block_pool_size";
 static int background_status(struct dm_cache_policy *pe, status_type_t type,
 			unsigned status_flags, char *result, unsigned maxlen)
 {
@@ -138,14 +159,14 @@ static int background_status(struct dm_cache_policy *pe, status_type_t type,
 
 	switch (type) {
 	case STATUSTYPE_INFO:
-		DMEMIT("%u ", atomic_read(&p->nr_dirty));
+		DMEMIT(" <r>%u</r>", atomic_read(&p->nr_dirty)); /* REMOVEME: only for development */
 		break;
 
 	case STATUSTYPE_TABLE:
-		DMEMIT("%s ", dm_cache_policy_get_name(&p->policy));
-
 		if (p->threshold_arg > -1)
 			DMEMIT("%s %u ", threshold_string, p->threshold_arg);
+
+		DMEMIT("%s ", dm_cache_policy_get_name(p->real_policy));
 	}
 
 	if (sz < maxlen)
@@ -157,10 +178,10 @@ static int background_status(struct dm_cache_policy *pe, status_type_t type,
 
 static int process_config_option(struct policy *p, char **argv, bool set_ctr_arg)
 {
-	if (!strcasecmp(argv[1], threshold_string)) {
+	if (!strcasecmp(argv[0], threshold_string)) {
 		unsigned long tmp;
 
-		if (kstrtoul(argv[2], 10, &tmp) ||
+		if (kstrtoul(argv[1], 10, &tmp) ||
 		    tmp > p->cache_blocks)
 			return -EINVAL;
 
@@ -187,8 +208,7 @@ static int background_message(struct dm_cache_policy *pe, unsigned argc, char **
 	if (argc != 3)
 		return -EINVAL;
 
-	r = !strcasecmp(argv[0], "set_config") ? process_config_option(p, argv, false) : 1;
-
+	r = !strcasecmp(argv[0], "set_config") ? process_config_option(p, argv + 1, false) : 1;
 	if (r == 1) /* Message not for us -> hand over to underlying policy plugin. */
 		r = policy_message(p->real_policy, argc, argv);
 
@@ -234,6 +254,7 @@ static struct dm_cache_policy *background_create(dm_cblock_t cache_blocks,
 
 	mutex_init(&p->lock);
 	p->cache_blocks = cache_blocks;
+	p->threshold = p->threshold_arg = -1;
 	atomic_set(&p->nr_dirty, 0);
 
 	r = process_config_option(p, argv, true);
@@ -250,6 +271,7 @@ bad:
 	kfree(p);
 	return NULL;
 }
+
 /*----------------------------------------------------------------------------*/
 
 static struct dm_cache_policy_type background_policy_type = {
