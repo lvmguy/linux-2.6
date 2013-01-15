@@ -350,7 +350,6 @@ static int alloc_entries(struct mq_policy *mq, unsigned elts)
 		}
 
 
-		INIT_LIST_HEAD(&e->dirty);
 		list_add(&e->list, &mq->free);
 	}
 
@@ -933,49 +932,38 @@ static int mq_lookup(struct dm_cache_policy *p, dm_oblock_t oblock, dm_cblock_t 
 	return r;
 }
 
-static void _set_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock, bool dirty)
-{
-	struct mq_policy *mq = to_mq_policy(p);
-	struct entry *e;
-
-	mutex_lock(&mq->lock);
-
-	e = hash_lookup(mq, oblock);
-	BUG_ON(!e);
-
-	if (dirty) {
-		if (list_empty(&e->dirty))
-			list_add_tail(&e->dirty, &mq->dirty);
-
-	} else if (!list_empty(&e->dirty))
-		list_del_init(&e->dirty);
-
-	mutex_unlock(&mq->lock);
-}
-
-static void mq_set_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
-{
-	_set_clear_dirty(p, oblock, true);
-}
-
-static void mq_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
-{
-	_set_clear_dirty(p, oblock, false);
-}
-
-static int mq_is_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
+static int _set_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock, bool dirty)
 {
 	int r;
 	struct mq_policy *mq = to_mq_policy(p);
 	struct entry *e;
 
 	mutex_lock(&mq->lock);
+
 	e = hash_lookup(mq, oblock);
 	BUG_ON(!e);
 	r = !list_empty(&e->dirty);
+
+	if (dirty) {
+		if (!r)
+			list_add_tail(&e->dirty, &mq->dirty);
+
+	} else if (r)
+		list_del_init(&e->dirty);
+
 	mutex_unlock(&mq->lock);
 
 	return r;
+}
+
+static int mq_set_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
+{
+	return _set_clear_dirty(p, oblock, true);
+}
+
+static int mq_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
+{
+	return _set_clear_dirty(p, oblock, false);
 }
 
 static int mq_load_mapping(struct dm_cache_policy *p,
@@ -1142,7 +1130,6 @@ static void init_policy_functions(struct mq_policy *mq)
 	mq->policy.lookup = mq_lookup;
 	mq->policy.set_dirty = mq_set_dirty;
 	mq->policy.clear_dirty = mq_clear_dirty;
-	mq->policy.is_dirty = mq_is_dirty;
 	mq->policy.load_mapping = mq_load_mapping;
 	mq->policy.walk_mappings = mq_walk_mappings;
 	mq->policy.remove_mapping = mq_remove_mapping;
