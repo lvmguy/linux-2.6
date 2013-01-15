@@ -893,7 +893,7 @@ static void promote(struct cache *cache, struct prealloc *structs,
 	mg->err = false;
 	mg->writeback = false;
 	mg->demote = false;
-	mg->promote = (bio_sectors(bio) == cache->sectors_per_block) ? false : true;
+	mg->promote = (bio_sectors(bio) == cache->sectors_per_block && bio_data_dir(bio) == WRITE) ? false : true;
 	mg->cache = cache;
 	mg->new_oblock = oblock;
 	mg->cblock = cblock;
@@ -938,7 +938,7 @@ static void demote_then_promote(struct cache *cache, struct prealloc *structs,
 	mg->err = false;
 	mg->writeback = false;
 	mg->demote = true;
-	mg->promote = (bio_sectors(bio) == cache->sectors_per_block) ? false : true;
+	mg->promote = (bio_sectors(bio) == cache->sectors_per_block && bio_data_dir(bio) == WRITE) ? false : true;
 	mg->cache = cache;
 	mg->old_oblock = old_oblock;
 	mg->new_oblock = new_oblock;

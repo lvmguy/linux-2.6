@@ -65,7 +65,7 @@ static int background_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
 	r = policy_set_dirty(p->real_policy, oblock);
 	BUG_ON(r < 0);
 	if (!r) {
-		BUG_ON(atomic_read(&p->nr_dirty) > p->cache_blocks);
+		BUG_ON(to_cblock(atomic_read(&p->nr_dirty)) > p->cache_blocks);
 		atomic_inc(&p->nr_dirty);
 	}
 
@@ -116,11 +116,10 @@ static int background_writeback_work(struct dm_cache_policy *pe,
 	int r;
 	struct policy *p = to_policy(pe);
 
-	BUG_ON(atomic_read(&p->nr_dirty) > p->cache_blocks);
-
-	if (p->cache_blocks - atomic_read(&p->nr_dirty) < p->threshold) {
+	if (p->cache_blocks - to_cblock(atomic_read(&p->nr_dirty)) < p->threshold) {
 		r = policy_next_dirty_block(p->real_policy, oblock, cblock);
 		if (!r) {
+			BUG_ON(to_cblock(atomic_read(&p->nr_dirty)) > p->cache_blocks);
 			BUG_ON(!atomic_read(&p->nr_dirty));
 			atomic_dec(&p->nr_dirty);
 		}
@@ -184,7 +183,7 @@ static int process_config_option(struct policy *p, char **argv, bool set_ctr_arg
 			p->threshold_arg = tmp;
 		}
 
-		p->threshold = tmp;
+		p->threshold = to_cblock(tmp);
 
 	} else
 		return 1; /* Inform caller it's not our option. */
@@ -245,7 +244,8 @@ static struct dm_cache_policy *background_create(dm_cblock_t cache_blocks,
 	init_policy_functions(p);
 
 	p->cache_blocks = cache_blocks;
-	p->threshold = p->threshold_arg = -1;
+	p->threshold = 0;
+	p->threshold_arg = -1;
 	atomic_set(&p->nr_dirty, 0);
 
 	r = process_config_option(p, argv, true);
