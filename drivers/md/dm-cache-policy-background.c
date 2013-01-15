@@ -1,5 +1,4 @@
 /*
- *
  * Copyright (C) 2013 Red Hat. All rights reserved.
  *
  * Stackable background write cache replacement policy module.
@@ -20,7 +19,6 @@
 
 struct policy {
 	struct dm_cache_policy policy;
-	struct mutex lock;
 
 	struct dm_cache_policy *real_policy;
 	dm_cblock_t cache_blocks, threshold;
@@ -59,35 +57,34 @@ static int background_lookup(struct dm_cache_policy *pe, dm_oblock_t oblock, dm_
 	return policy_lookup(to_policy(pe)->real_policy, oblock, cblock);
 }
 
-static void background_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
+static int background_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
 {
 	int r;
 	struct policy *p = to_policy(pe);
 
-	BUG_ON(atomic_read(&p->nr_dirty) > p->cache_blocks);
-
-	r = policy_is_dirty(p->real_policy, oblock);
+	r = policy_set_dirty(p->real_policy, oblock);
 	BUG_ON(r < 0);
-	if (!r)
+	if (!r) {
+		BUG_ON(atomic_read(&p->nr_dirty) > p->cache_blocks);
 		atomic_inc(&p->nr_dirty);
+	}
 
-	policy_set_dirty(p->real_policy, oblock);
+	return r;
 }
 
-static void background_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
+static int background_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
 {
 	int r;
 	struct policy *p = to_policy(pe);
 
-
-	r = policy_is_dirty(p->real_policy, oblock);
+	r = policy_clear_dirty(p->real_policy, oblock);
 	BUG_ON(r < 0);
 	if (r) {
 		BUG_ON(!atomic_read(&p->nr_dirty));
 		atomic_dec(&p->nr_dirty);
 	}
 
-	policy_clear_dirty(p->real_policy, oblock);
+	return r;
 }
 
 static int background_load_mapping(struct dm_cache_policy *pe,
@@ -119,23 +116,17 @@ static int background_writeback_work(struct dm_cache_policy *pe,
 	int r;
 	struct policy *p = to_policy(pe);
 
-	mutex_lock(&p->lock);
-
 	BUG_ON(atomic_read(&p->nr_dirty) > p->cache_blocks);
 
-	if (p->cache_blocks - atomic_read(&p->nr_dirty) >= p->threshold) {
+	if (p->cache_blocks - atomic_read(&p->nr_dirty) < p->threshold) {
+		r = policy_next_dirty_block(p->real_policy, oblock, cblock);
+		if (!r) {
+			BUG_ON(!atomic_read(&p->nr_dirty));
+			atomic_dec(&p->nr_dirty);
+		}
+
+	} else
 		r = -ENOENT;
-		goto unlock;
-	}
-
-	r = policy_next_dirty_block(p->real_policy, oblock, cblock);
-	if (!r) {
-		BUG_ON(!atomic_read(&p->nr_dirty));
-		atomic_dec(&p->nr_dirty);
-	}
-
-unlock:
-	mutex_unlock(&p->lock);
 
 	return r;
 }
@@ -253,7 +244,6 @@ static struct dm_cache_policy *background_create(dm_cblock_t cache_blocks,
 
 	init_policy_functions(p);
 
-	mutex_init(&p->lock);
 	p->cache_blocks = cache_blocks;
 	p->threshold = p->threshold_arg = -1;
 	atomic_set(&p->nr_dirty, 0);

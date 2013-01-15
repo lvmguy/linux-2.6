@@ -27,21 +27,14 @@ static inline int policy_lookup(struct dm_cache_policy *p, dm_oblock_t oblock, d
 	return p->lookup(p, oblock, cblock);
 }
 
-static inline void policy_set_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
+static inline int policy_set_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 {
-	if (p->set_dirty)
-		p->set_dirty(p, oblock);
+	return p->set_dirty ? p->set_dirty(p, oblock) : -EOPNOTSUPP;
 }
 
-static inline void policy_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
+static inline int policy_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 {
-	if (p->clear_dirty)
-		p->clear_dirty(p, oblock);
-}
-
-static inline int policy_is_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
-{
-	return p->is_dirty ? p->is_dirty(p, oblock) : -EOPNOTSUPP;
+	return p->clear_dirty ? p->clear_dirty(p, oblock) : -EOPNOTSUPP;
 }
 
 static inline int policy_load_mapping(struct dm_cache_policy *p,
