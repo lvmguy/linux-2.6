@@ -1445,46 +1445,35 @@ static void add_dirty_entry(struct policy *p, struct basic_cache_entry *e)
 		queue_add_tail(&p->queues.dirty, &e->dirty);
 }
 
-static void _set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bool dirty)
-{
-	struct policy *p = to_policy(pe);
-	struct basic_cache_entry *e;
-
-	mutex_lock(&p->lock);
-
-	e = lookup_cache_entry(p, oblock);
-	BUG_ON(!e);
-	queue_del(&e->dirty);
-
-	if (dirty)
-		add_dirty_entry(p, e); 
-
-	mutex_unlock(&p->lock);
-}
-
-static void basic_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
-{
-	_set_clear_dirty(pe, oblock, true);
-}
-
-static void basic_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
-{
-	_set_clear_dirty(pe, oblock, false);
-}
-
-static int basic_is_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
+static int _set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bool dirty)
 {
 	int r;
 	struct policy *p = to_policy(pe);
 	struct basic_cache_entry *e;
 
 	mutex_lock(&p->lock);
+
 	e = lookup_cache_entry(p, oblock);
 	BUG_ON(!e);
 	r = !list_empty(&e->dirty);
+	queue_del(&e->dirty);
+
+	if (dirty)
+		add_dirty_entry(p, e); 
+
 	mutex_unlock(&p->lock);
 
 	return r;
+}
+
+static int basic_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
+{
+	return _set_clear_dirty(pe, oblock, true);
+}
+
+static int basic_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
+{
+	return _set_clear_dirty(pe, oblock, false);
 }
 
 static int basic_load_mapping(struct dm_cache_policy *pe,
@@ -1798,7 +1787,6 @@ static void init_policy_functions(struct policy *p)
 	p->policy.lookup = basic_lookup;
 	p->policy.set_dirty = basic_set_dirty;
 	p->policy.clear_dirty = basic_clear_dirty;
-	p->policy.is_dirty = basic_is_dirty;
 	p->policy.load_mapping = basic_load_mapping;
 	p->policy.walk_mappings = basic_walk_mappings;
 	p->policy.remove_mapping = basic_remove_mapping;
