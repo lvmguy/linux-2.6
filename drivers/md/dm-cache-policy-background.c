@@ -173,7 +173,7 @@ static int process_config_option(struct policy *p, char **argv, bool set_ctr_arg
 		unsigned long tmp;
 
 		if (kstrtoul(argv[1], 10, &tmp) ||
-		    tmp > p->cache_blocks)
+		    tmp > from_cblock(p->cache_blocks))
 			return -EINVAL;
 
 		if (set_ctr_arg) {
