@@ -65,7 +65,7 @@ static int background_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
 	r = policy_set_dirty(p->real_policy, oblock);
 	BUG_ON(r < 0);
 	if (!r) {
-		BUG_ON(to_cblock(atomic_read(&p->nr_dirty)) > p->cache_blocks);
+		BUG_ON(atomic_read(&p->nr_dirty) > from_cblock(p->cache_blocks));
 		atomic_inc(&p->nr_dirty);
 	}
 
@@ -116,10 +116,10 @@ static int background_writeback_work(struct dm_cache_policy *pe,
 	int r;
 	struct policy *p = to_policy(pe);
 
-	if (p->cache_blocks - to_cblock(atomic_read(&p->nr_dirty)) < p->threshold) {
+	if (from_cblock(p->cache_blocks) - atomic_read(&p->nr_dirty) < from_cblock(p->threshold)) {
 		r = policy_next_dirty_block(p->real_policy, oblock, cblock);
 		if (!r) {
-			BUG_ON(to_cblock(atomic_read(&p->nr_dirty)) > p->cache_blocks);
+			BUG_ON(atomic_read(&p->nr_dirty) > from_cblock(p->cache_blocks));
 			BUG_ON(!atomic_read(&p->nr_dirty));
 			atomic_dec(&p->nr_dirty);
 		}
