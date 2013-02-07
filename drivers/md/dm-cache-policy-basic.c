@@ -1244,7 +1244,7 @@ static void get_cache_block(struct policy *p, dm_oblock_t oblock, struct bio *bi
 	add_cache_entry(p, e);
 }
 
-static bool in_cache(struct policy *p, dm_block_t oblock, struct bio *bio, struct policy_result *result)
+static bool in_cache(struct policy *p, dm_oblock_t oblock, struct bio *bio, struct policy_result *result)
 {
 	struct basic_cache_entry *e = lookup_cache_entry(p, oblock);
 
