@@ -84,6 +84,7 @@ struct thread_struct {
 	struct per_event per_event;	/* Cause of the last PER trap */
         /* pfault_wait is used to block the process on a pfault event */
 	unsigned long pfault_wait;
+	struct list_head list;
 };
 
 typedef struct thread_struct thread_struct;
@@ -147,11 +148,6 @@ extern int kernel_thread(int (*fn)(void *), void * arg, unsigned long flags);
  * Return saved PC of a blocked thread.
  */
 extern unsigned long thread_saved_pc(struct task_struct *t);
-
-/*
- * Print register of task into buffer. Used in fs/proc/array.c.
- */
-extern void task_show_regs(struct seq_file *m, struct task_struct *task);
 
 extern void show_code(struct pt_regs *regs);
 

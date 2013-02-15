@@ -28,7 +28,6 @@
 #include <media/videobuf-vmalloc.h>
 
 #include "xc5000.h"
-#include "dvb_dummy_fe.h"
 #include "s5h1432.h"
 #include "tda18271.h"
 #include "s5h1411.h"
@@ -619,7 +618,7 @@ static int dvb_init(struct cx231xx *dev)
 
 		if (dev->dvb->frontend == NULL) {
 			printk(DRIVER_NAME
-			       ": Failed to attach dummy front end\n");
+			       ": Failed to attach s5h1411 front end\n");
 			result = -EINVAL;
 			goto out_free;
 		}
@@ -665,7 +664,7 @@ static int dvb_init(struct cx231xx *dev)
 
 		if (dev->dvb->frontend == NULL) {
 			printk(DRIVER_NAME
-			       ": Failed to attach dummy front end\n");
+			       ": Failed to attach s5h1411 front end\n");
 			result = -EINVAL;
 			goto out_free;
 		}
@@ -705,6 +704,7 @@ static int dvb_init(struct cx231xx *dev)
 		break;
 
 	case CX231XX_BOARD_PV_PLAYTV_USB_HYBRID:
+	case CX231XX_BOARD_KWORLD_UB430_USB_HYBRID:
 
 		printk(KERN_INFO "%s: looking for demod on i2c bus: %d\n",
 		       __func__, i2c_adapter_id(&dev->i2c_bus[dev->board.tuner_i2c_master].i2c_adap));

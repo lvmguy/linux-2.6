@@ -40,10 +40,12 @@ enum rc_driver_type {
  * @driver_name: name of the hardware driver which registered this device
  * @map_name: name of the default keymap
  * @rc_map: current scan/key table
+ * @lock: used to ensure we've filled in all protocol details before
+ *	anyone can call show_protocols or store_protocols
  * @devno: unique remote control device number
  * @raw: additional data for raw pulse/space devices
  * @input_dev: the input child device used to communicate events to userspace
- * @driver_type: specifies if protocol decoding is done in hardware or software 
+ * @driver_type: specifies if protocol decoding is done in hardware or software
  * @idle: used to keep track of RX state
  * @allowed_protos: bitmask with the supported RC_TYPE_* protocols
  * @scanmask: some hardware decoders are not capable of providing the full
@@ -86,7 +88,8 @@ struct rc_dev {
 	struct input_id			input_id;
 	char				*driver_name;
 	const char			*map_name;
-	struct rc_map	rc_map;
+	struct rc_map			rc_map;
+	struct mutex			lock;
 	unsigned long			devno;
 	struct ir_raw_event_ctrl	*raw;
 	struct input_dev		*input_dev;
@@ -183,6 +186,9 @@ static inline void init_ir_raw_event(struct ir_raw_event *ev)
 }
 
 #define IR_MAX_DURATION         0xFFFFFFFF      /* a bit more than 4 seconds */
+#define US_TO_NS(usec)		((usec) * 1000)
+#define MS_TO_US(msec)		((msec) * 1000)
+#define MS_TO_NS(msec)		((msec) * 1000 * 1000)
 
 void ir_raw_event_handle(struct rc_dev *dev);
 int ir_raw_event_store(struct rc_dev *dev, struct ir_raw_event *ev);

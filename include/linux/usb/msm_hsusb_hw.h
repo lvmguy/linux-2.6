@@ -16,18 +16,15 @@
 #ifndef __LINUX_USB_GADGET_MSM72K_UDC_H__
 #define __LINUX_USB_GADGET_MSM72K_UDC_H__
 
-#ifdef CONFIG_ARCH_MSM7X00A
-#define USB_SBUSCFG          (MSM_USB_BASE + 0x0090)
-#else
 #define USB_AHBBURST         (MSM_USB_BASE + 0x0090)
 #define USB_AHBMODE          (MSM_USB_BASE + 0x0098)
-#endif
 #define USB_CAPLENGTH        (MSM_USB_BASE + 0x0100) /* 8 bit */
 
 #define USB_USBCMD           (MSM_USB_BASE + 0x0140)
 #define USB_PORTSC           (MSM_USB_BASE + 0x0184)
 #define USB_OTGSC            (MSM_USB_BASE + 0x01A4)
 #define USB_USBMODE          (MSM_USB_BASE + 0x01A8)
+#define USB_PHY_CTRL         (MSM_USB_BASE + 0x0240)
 
 #define USBCMD_RESET   2
 #define USB_USBINTR          (MSM_USB_BASE + 0x0148)
@@ -46,6 +43,7 @@
 
 #define ASYNC_INTR_CTRL         (1 << 29) /* Enable async interrupt */
 #define ULPI_STP_CTRL           (1 << 30) /* Block communication with PHY */
+#define PHY_RETEN               (1 << 1) /* PHY retention enable/disable */
 
 /* OTG definitions */
 #define OTGSC_INTSTS_MASK	(0x7f << 16)

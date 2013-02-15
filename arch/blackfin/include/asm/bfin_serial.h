@@ -10,6 +10,7 @@
 #define __BFIN_ASM_SERIAL_H__
 
 #include <linux/serial_core.h>
+#include <linux/spinlock.h>
 #include <mach/anomaly.h>
 #include <mach/bfin_serial.h>
 
@@ -41,6 +42,7 @@ struct bfin_serial_port {
 	struct circ_buf rx_dma_buf;
 	struct timer_list rx_dma_timer;
 	int rx_dma_nrows;
+	spinlock_t rx_lock;
 	unsigned int tx_dma_channel;
 	unsigned int rx_dma_channel;
 	struct work_struct tx_dma_workqueue;
@@ -182,7 +184,7 @@ struct bfin_uart_regs {
 #undef __BFP
 
 #ifndef port_membase
-# define port_membase(p) (((struct bfin_serial_port *)(p))->port.membase)
+# define port_membase(p) 0
 #endif
 
 #define UART_GET_CHAR(p)      bfin_read16(port_membase(p) + OFFSET_RBR)
@@ -233,10 +235,10 @@ struct bfin_uart_regs {
 #define UART_SET_DLAB(p)      do { UART_PUT_LCR(p, UART_GET_LCR(p) | DLAB); SSYNC(); } while (0)
 
 #ifndef put_lsr_cache
-# define put_lsr_cache(p, v) (((struct bfin_serial_port *)(p))->lsr = (v))
+# define put_lsr_cache(p, v)
 #endif
 #ifndef get_lsr_cache
-# define get_lsr_cache(p)    (((struct bfin_serial_port *)(p))->lsr)
+# define get_lsr_cache(p) 0
 #endif
 
 /* The hardware clears the LSR bits upon read, so we need to cache

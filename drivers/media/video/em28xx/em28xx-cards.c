@@ -33,6 +33,7 @@
 #include <media/saa7115.h>
 #include <media/tvp5150.h>
 #include <media/tvaudio.h>
+#include <media/mt9v011.h>
 #include <media/i2c-addr.h>
 #include <media/tveeprom.h>
 #include <media/v4l2-common.h>
@@ -95,6 +96,13 @@ static struct em28xx_reg_seq hauppauge_wintv_hvr_900_analog[] = {
 static struct em28xx_reg_seq hauppauge_wintv_hvr_900_digital[] = {
 	{EM28XX_R08_GPIO,	0x2e,	~EM_GPIO_4,	10},
 	{EM2880_R04_GPO,	0x04,	0x0f,		10},
+	{EM2880_R04_GPO,	0x0c,	0x0f,		10},
+	{ -1,			-1,	-1,		-1},
+};
+
+/* Board Hauppauge WinTV HVR 900 (R2) digital */
+static struct em28xx_reg_seq hauppauge_wintv_hvr_900R2_digital[] = {
+	{EM28XX_R08_GPIO,	0x2e,	~EM_GPIO_4,	10},
 	{EM2880_R04_GPO,	0x0c,	0x0f,		10},
 	{ -1,			-1,	-1,		-1},
 };
@@ -281,6 +289,16 @@ static struct em28xx_reg_seq leadership_reset[] = {
 	{	-1,		-1,	-1,	-1},
 };
 
+/* 2013:024f PCTV Systems nanoStick T2 290e
+ * GPIO_6 - demod reset
+ * GPIO_7 - LED
+ */
+static struct em28xx_reg_seq pctv_290e[] = {
+	{EM2874_R80_GPIO,	0x00,	0xff,		80},
+	{EM2874_R80_GPIO,	0x40,	0xff,		80}, /* GPIO_6 = 1 */
+	{EM2874_R80_GPIO,	0xc0,	0xff,		80}, /* GPIO_7 = 1 */
+	{-1,			-1,	-1,		-1},
+};
 
 /*
  *  Board definitions
@@ -833,7 +851,7 @@ struct em28xx_board em28xx_boards[] = {
 		.mts_firmware = 1,
 		.has_dvb      = 1,
 		.dvb_gpio     = hauppauge_wintv_hvr_900_digital,
-		.ir_codes     = RC_MAP_HAUPPAUGE_NEW,
+		.ir_codes     = RC_MAP_HAUPPAUGE,
 		.decoder      = EM28XX_TVP5150,
 		.input        = { {
 			.type     = EM28XX_VMUX_TELEVISION,
@@ -858,7 +876,9 @@ struct em28xx_board em28xx_boards[] = {
 		.tuner_type   = TUNER_XC2028,
 		.tuner_gpio   = default_tuner_gpio,
 		.mts_firmware = 1,
-		.ir_codes     = RC_MAP_HAUPPAUGE_NEW,
+		.has_dvb      = 1,
+		.dvb_gpio     = hauppauge_wintv_hvr_900R2_digital,
+		.ir_codes     = RC_MAP_HAUPPAUGE,
 		.decoder      = EM28XX_TVP5150,
 		.input        = { {
 			.type     = EM28XX_VMUX_TELEVISION,
@@ -884,7 +904,7 @@ struct em28xx_board em28xx_boards[] = {
 		.mts_firmware   = 1,
 		.has_dvb        = 1,
 		.dvb_gpio       = hauppauge_wintv_hvr_900_digital,
-		.ir_codes       = RC_MAP_HAUPPAUGE_NEW,
+		.ir_codes       = RC_MAP_HAUPPAUGE,
 		.decoder        = EM28XX_TVP5150,
 		.input          = { {
 			.type     = EM28XX_VMUX_TELEVISION,
@@ -910,7 +930,7 @@ struct em28xx_board em28xx_boards[] = {
 		.mts_firmware   = 1,
 		.has_dvb        = 1,
 		.dvb_gpio       = hauppauge_wintv_hvr_900_digital,
-		.ir_codes       = RC_MAP_RC5_HAUPPAUGE_NEW,
+		.ir_codes       = RC_MAP_HAUPPAUGE,
 		.decoder        = EM28XX_TVP5150,
 		.input          = { {
 			.type     = EM28XX_VMUX_TELEVISION,
@@ -1447,12 +1467,14 @@ struct em28xx_board em28xx_boards[] = {
 			.gpio     = pinnacle_hybrid_pro_analog,
 		} },
 	},
-	[EM2882_BOARD_PINNACLE_HYBRID_PRO] = {
-		.name         = "Pinnacle Hybrid Pro (2)",
-		.valid        = EM28XX_BOARD_NOT_VALIDATED,
+	[EM2882_BOARD_PINNACLE_HYBRID_PRO_330E] = {
+		.name         = "Pinnacle Hybrid Pro (330e)",
 		.tuner_type   = TUNER_XC2028,
 		.tuner_gpio   = default_tuner_gpio,
 		.mts_firmware = 1,
+		.has_dvb      = 1,
+		.dvb_gpio     = hauppauge_wintv_hvr_900R2_digital,
+		.ir_codes     = RC_MAP_PINNACLE_PCTV_HD,
 		.decoder      = EM28XX_TVP5150,
 		.input        = { {
 			.type     = EM28XX_VMUX_TELEVISION,
@@ -1748,6 +1770,17 @@ struct em28xx_board em28xx_boards[] = {
 		.dvb_gpio   = kworld_a340_digital,
 		.tuner_gpio = default_tuner_gpio,
 	},
+	/* 2013:024f PCTV Systems nanoStick T2 290e.
+	 * Empia EM28174, Sony CXD2820R and NXP TDA18271HD/C2 */
+	[EM28174_BOARD_PCTV_290E] = {
+		.i2c_speed      = EM2874_I2C_SECONDARY_BUS_SELECT |
+			EM28XX_I2C_CLK_WAIT_ENABLE | EM28XX_I2C_FREQ_100_KHZ,
+		.xclk          = EM28XX_XCLK_FREQUENCY_12MHZ,
+		.name          = "PCTV Systems nanoStick T2 290e",
+		.tuner_type    = TUNER_ABSENT,
+		.tuner_gpio    = pctv_290e,
+		.has_dvb       = 1,
+	},
 };
 const unsigned int em28xx_bcount = ARRAY_SIZE(em28xx_boards);
 
@@ -1862,7 +1895,7 @@ struct usb_device_id em28xx_id_table[] = {
 	{ USB_DEVICE(0x2304, 0x021a),
 			.driver_info = EM2820_BOARD_PINNACLE_DVC_90 },
 	{ USB_DEVICE(0x2304, 0x0226),
-			.driver_info = EM2882_BOARD_PINNACLE_HYBRID_PRO },
+			.driver_info = EM2882_BOARD_PINNACLE_HYBRID_PRO_330E },
 	{ USB_DEVICE(0x2304, 0x0227),
 			.driver_info = EM2880_BOARD_PINNACLE_PCTV_HD_PRO },
 	{ USB_DEVICE(0x0413, 0x6023),
@@ -1875,6 +1908,8 @@ struct usb_device_id em28xx_id_table[] = {
 			.driver_info = EM2860_BOARD_GADMEI_UTV330 },
 	{ USB_DEVICE(0x1b80, 0xa340),
 			.driver_info = EM2870_BOARD_KWORLD_A340 },
+	{ USB_DEVICE(0x2013, 0x024f),
+			.driver_info = EM28174_BOARD_PCTV_290E },
 	{ },
 };
 MODULE_DEVICE_TABLE(usb, em28xx_id_table);
@@ -1913,11 +1948,6 @@ static unsigned short saa711x_addrs[] = {
 
 static unsigned short tvp5150_addrs[] = {
 	0xb8 >> 1,
-	0xba >> 1,
-	I2C_CLIENT_END
-};
-
-static unsigned short mt9v011_addrs[] = {
 	0xba >> 1,
 	I2C_CLIENT_END
 };
@@ -2233,7 +2263,7 @@ static void em28xx_setup_xc3028(struct em28xx *dev, struct xc2028_ctrl *ctl)
 		ctl->demod = XC3028_FE_ZARLINK456;
 		break;
 	case EM2880_BOARD_HAUPPAUGE_WINTV_HVR_900_R2:
-		/* djh - Not sure which demod we need here */
+	case EM2882_BOARD_PINNACLE_HYBRID_PRO_330E:
 		ctl->demod = XC3028_FE_DEFAULT;
 		break;
 	case EM2880_BOARD_AMD_ATI_TV_WONDER_HD_600:
@@ -2434,9 +2464,10 @@ void em28xx_register_i2c_ir(struct em28xx *dev)
 		dev->init_data.name = "i2c IR (EM28XX Pinnacle PCTV)";
 		break;
 	case EM2820_BOARD_HAUPPAUGE_WINTV_USB_2:
-		dev->init_data.ir_codes = RC_MAP_RC5_HAUPPAUGE_NEW;
+		dev->init_data.ir_codes = RC_MAP_HAUPPAUGE;
 		dev->init_data.get_key = em28xx_get_key_em_haup;
 		dev->init_data.name = "i2c IR (EM2840 Hauppauge)";
+		break;
 	case EM2820_BOARD_LEADTEK_WINFAST_USBII_DELUXE:
 		dev->init_data.ir_codes = RC_MAP_WINFAST_USBII_DELUXE;
 		dev->init_data.get_key = em28xx_get_key_winfast_usbii_deluxe;
@@ -2623,11 +2654,17 @@ void em28xx_card_setup(struct em28xx *dev)
 			"tvp5150", 0, tvp5150_addrs);
 
 	if (dev->em28xx_sensor == EM28XX_MT9V011) {
+		struct mt9v011_platform_data pdata;
+		struct i2c_board_info mt9v011_info = {
+			.type = "mt9v011",
+			.addr = 0xba >> 1,
+			.platform_data = &pdata,
+		};
 		struct v4l2_subdev *sd;
 
-		sd = v4l2_i2c_new_subdev(&dev->v4l2_dev,
-			 &dev->i2c_adap, "mt9v011", 0, mt9v011_addrs);
-		v4l2_subdev_call(sd, core, s_config, 0, &dev->sensor_xtal);
+		pdata.xtal = dev->sensor_xtal;
+		sd = v4l2_i2c_new_subdev_board(&dev->v4l2_dev, &dev->i2c_adap,
+				&mt9v011_info, NULL);
 	}
 
 
@@ -2793,6 +2830,11 @@ static int em28xx_init_dev(struct em28xx **devhandle, struct usb_device *udev,
 			break;
 		case CHIP_ID_EM2874:
 			em28xx_info("chip ID is em2874\n");
+			dev->reg_gpio_num = EM2874_R80_GPIO;
+			dev->wait_after_write = 0;
+			break;
+		case CHIP_ID_EM28174:
+			em28xx_info("chip ID is em28174\n");
 			dev->reg_gpio_num = EM2874_R80_GPIO;
 			dev->wait_after_write = 0;
 			break;

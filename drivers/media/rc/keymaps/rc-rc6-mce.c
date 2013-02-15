@@ -3,6 +3,9 @@
  *
  * Copyright (c) 2010 by Jarod Wilson <jarod@redhat.com>
  *
+ * See http://mediacenterguides.com/book/export/html/31 for details on
+ * key mappings.
+ *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
@@ -27,7 +30,7 @@ static struct rc_map_table rc6_mce[] = {
 	{ 0x800f040a, KEY_DELETE },
 	{ 0x800f040b, KEY_ENTER },
 	{ 0x800f040c, KEY_POWER },		/* PC Power */
-	{ 0x800f040d, KEY_PROG1 },		/* Windows MCE button */
+	{ 0x800f040d, KEY_MEDIA },		/* Windows MCE button */
 	{ 0x800f040e, KEY_MUTE },
 	{ 0x800f040f, KEY_INFO },
 
@@ -60,6 +63,9 @@ static struct rc_map_table rc6_mce[] = {
 	{ 0x800f0426, KEY_EPG },		/* Guide */
 	{ 0x800f0427, KEY_ZOOM },		/* Aspect */
 
+	{ 0x800f0432, KEY_MODE },		/* Visualization */
+	{ 0x800f0433, KEY_PRESENTATION },	/* Slide Show */
+	{ 0x800f0434, KEY_EJECTCD },
 	{ 0x800f043a, KEY_BRIGHTNESSUP },
 
 	{ 0x800f0446, KEY_TV },
@@ -81,7 +87,7 @@ static struct rc_map_table rc6_mce[] = {
 
 	{ 0x800f0465, KEY_POWER2 },	/* TV Power */
 	{ 0x800f046e, KEY_PLAYPAUSE },
-	{ 0x800f046f, KEY_MEDIA },	/* Start media application (NEW) */
+	{ 0x800f046f, KEY_PLAYER },	/* Start media application (NEW) */
 
 	{ 0x800f0480, KEY_BRIGHTNESSDOWN },
 	{ 0x800f0481, KEY_PLAYPAUSE },

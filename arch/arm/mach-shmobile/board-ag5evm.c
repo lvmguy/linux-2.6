@@ -34,9 +34,12 @@
 #include <linux/input/sh_keysc.h>
 #include <linux/mmc/host.h>
 #include <linux/mmc/sh_mmcif.h>
-
+#include <linux/mmc/sh_mobile_sdhi.h>
+#include <linux/mfd/tmio.h>
+#include <linux/sh_clk.h>
+#include <video/sh_mobile_lcdc.h>
+#include <video/sh_mipi_dsi.h>
 #include <sound/sh_fsi.h>
-
 #include <mach/hardware.h>
 #include <mach/sh73a0.h>
 #include <mach/common.h>
@@ -118,13 +121,6 @@ static struct platform_device keysc_device = {
 };
 
 /* FSI A */
-static struct sh_fsi_platform_info fsi_info = {
-	.porta_flags = SH_FSI_OUT_SLAVE_MODE	|
-		       SH_FSI_IN_SLAVE_MODE	|
-		       SH_FSI_OFMT(I2S)		|
-		       SH_FSI_IFMT(I2S),
-};
-
 static struct resource fsi_resources[] = {
 	[0] = {
 		.name	= "FSI",
@@ -143,9 +139,6 @@ static struct platform_device fsi_device = {
 	.id		= -1,
 	.num_resources	= ARRAY_SIZE(fsi_resources),
 	.resource	= fsi_resources,
-	.dev	= {
-		.platform_data	= &fsi_info,
-	},
 };
 
 static struct resource sh_mmcif_resources[] = {
@@ -165,10 +158,19 @@ static struct resource sh_mmcif_resources[] = {
 	},
 };
 
+static struct sh_mmcif_dma sh_mmcif_dma = {
+	.chan_priv_rx	= {
+		.slave_id	= SHDMA_SLAVE_MMCIF_RX,
+	},
+	.chan_priv_tx	= {
+		.slave_id	= SHDMA_SLAVE_MMCIF_TX,
+	},
+};
 static struct sh_mmcif_plat_data sh_mmcif_platdata = {
 	.sup_pclk	= 0,
 	.ocr		= MMC_VDD_165_195,
 	.caps		= MMC_CAP_8_BIT_DATA | MMC_CAP_NONREMOVABLE,
+	.dma		= &sh_mmcif_dma,
 };
 
 static struct platform_device mmc_device = {
@@ -183,11 +185,250 @@ static struct platform_device mmc_device = {
 	.resource	= sh_mmcif_resources,
 };
 
+/* IrDA */
+static struct resource irda_resources[] = {
+	[0] = {
+		.start	= 0xE6D00000,
+		.end	= 0xE6D01FD4 - 1,
+		.flags  = IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= gic_spi(95),
+		.flags  = IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device irda_device = {
+	.name           = "sh_irda",
+	.id		= 0,
+	.resource       = irda_resources,
+	.num_resources  = ARRAY_SIZE(irda_resources),
+};
+
+static unsigned char lcd_backlight_seq[3][2] = {
+	{ 0x04, 0x07 },
+	{ 0x23, 0x80 },
+	{ 0x03, 0x01 },
+};
+
+static void lcd_backlight_on(void)
+{
+	struct i2c_adapter *a;
+	struct i2c_msg msg;
+	int k;
+
+	a = i2c_get_adapter(1);
+	for (k = 0; a && k < 3; k++) {
+		msg.addr = 0x6d;
+		msg.buf = &lcd_backlight_seq[k][0];
+		msg.len = 2;
+		msg.flags = 0;
+		if (i2c_transfer(a, &msg, 1) != 1)
+			break;
+	}
+}
+
+static void lcd_backlight_reset(void)
+{
+	gpio_set_value(GPIO_PORT235, 0);
+	mdelay(24);
+	gpio_set_value(GPIO_PORT235, 1);
+}
+
+static void lcd_on(void *board_data, struct fb_info *info)
+{
+	lcd_backlight_on();
+}
+
+static void lcd_off(void *board_data)
+{
+	lcd_backlight_reset();
+}
+
+/* LCDC0 */
+static const struct fb_videomode lcdc0_modes[] = {
+	{
+		.name		= "R63302(QHD)",
+		.xres		= 544,
+		.yres		= 961,
+		.left_margin	= 72,
+		.right_margin	= 600,
+		.hsync_len	= 16,
+		.upper_margin	= 8,
+		.lower_margin	= 8,
+		.vsync_len	= 2,
+		.sync		= FB_SYNC_VERT_HIGH_ACT | FB_SYNC_HOR_HIGH_ACT,
+	},
+};
+
+static struct sh_mobile_lcdc_info lcdc0_info = {
+	.clock_source = LCDC_CLK_PERIPHERAL,
+	.ch[0] = {
+		.chan = LCDC_CHAN_MAINLCD,
+		.interface_type = RGB24,
+		.clock_divider = 1,
+		.flags = LCDC_FLAGS_DWPOL,
+		.lcd_size_cfg.width = 44,
+		.lcd_size_cfg.height = 79,
+		.bpp = 16,
+		.lcd_cfg = lcdc0_modes,
+		.num_cfg = ARRAY_SIZE(lcdc0_modes),
+		.board_cfg = {
+			.display_on = lcd_on,
+			.display_off = lcd_off,
+		},
+	}
+};
+
+static struct resource lcdc0_resources[] = {
+	[0] = {
+		.name	= "LCDC0",
+		.start	= 0xfe940000, /* P4-only space */
+		.end	= 0xfe943fff,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= intcs_evt2irq(0x580),
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device lcdc0_device = {
+	.name		= "sh_mobile_lcdc_fb",
+	.num_resources	= ARRAY_SIZE(lcdc0_resources),
+	.resource	= lcdc0_resources,
+	.id             = 0,
+	.dev	= {
+		.platform_data	= &lcdc0_info,
+		.coherent_dma_mask = ~0,
+	},
+};
+
+/* MIPI-DSI */
+static struct resource mipidsi0_resources[] = {
+	[0] = {
+		.name	= "DSI0",
+		.start  = 0xfeab0000,
+		.end    = 0xfeab3fff,
+		.flags  = IORESOURCE_MEM,
+	},
+	[1] = {
+		.name	= "DSI0",
+		.start  = 0xfeab4000,
+		.end    = 0xfeab7fff,
+		.flags  = IORESOURCE_MEM,
+	},
+};
+
+static struct sh_mipi_dsi_info mipidsi0_info = {
+	.data_format	= MIPI_RGB888,
+	.lcd_chan	= &lcdc0_info.ch[0],
+	.vsynw_offset	= 20,
+	.clksrc		= 1,
+	.flags		= SH_MIPI_DSI_HSABM,
+};
+
+static struct platform_device mipidsi0_device = {
+	.name           = "sh-mipi-dsi",
+	.num_resources  = ARRAY_SIZE(mipidsi0_resources),
+	.resource       = mipidsi0_resources,
+	.id             = 0,
+	.dev	= {
+		.platform_data	= &mipidsi0_info,
+	},
+};
+
+static struct sh_mobile_sdhi_info sdhi0_info = {
+	.dma_slave_tx	= SHDMA_SLAVE_SDHI0_TX,
+	.dma_slave_rx	= SHDMA_SLAVE_SDHI0_RX,
+	.tmio_caps	= MMC_CAP_SD_HIGHSPEED,
+	.tmio_ocr_mask	= MMC_VDD_27_28 | MMC_VDD_28_29,
+};
+
+static struct resource sdhi0_resources[] = {
+	[0] = {
+		.name	= "SDHI0",
+		.start	= 0xee100000,
+		.end	= 0xee1000ff,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= gic_spi(83),
+		.flags	= IORESOURCE_IRQ,
+	},
+	[2] = {
+		.start	= gic_spi(84),
+		.flags	= IORESOURCE_IRQ,
+	},
+	[3] = {
+		.start	= gic_spi(85),
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device sdhi0_device = {
+	.name		= "sh_mobile_sdhi",
+	.id		= 0,
+	.num_resources	= ARRAY_SIZE(sdhi0_resources),
+	.resource	= sdhi0_resources,
+	.dev	= {
+		.platform_data	= &sdhi0_info,
+	},
+};
+
+void ag5evm_sdhi1_set_pwr(struct platform_device *pdev, int state)
+{
+	gpio_set_value(GPIO_PORT114, state);
+}
+
+static struct sh_mobile_sdhi_info sh_sdhi1_info = {
+	.tmio_flags	= TMIO_MMC_WRPROTECT_DISABLE,
+	.tmio_caps	= MMC_CAP_NONREMOVABLE | MMC_CAP_SDIO_IRQ,
+	.tmio_ocr_mask	= MMC_VDD_32_33 | MMC_VDD_33_34,
+	.set_pwr	= ag5evm_sdhi1_set_pwr,
+};
+
+static struct resource sdhi1_resources[] = {
+	[0] = {
+		.name	= "SDHI1",
+		.start	= 0xee120000,
+		.end	= 0xee1200ff,
+		.flags	= IORESOURCE_MEM,
+	},
+	[1] = {
+		.start	= gic_spi(87),
+		.flags	= IORESOURCE_IRQ,
+	},
+	[2] = {
+		.start	= gic_spi(88),
+		.flags	= IORESOURCE_IRQ,
+	},
+	[3] = {
+		.start	= gic_spi(89),
+		.flags	= IORESOURCE_IRQ,
+	},
+};
+
+static struct platform_device sdhi1_device = {
+	.name		= "sh_mobile_sdhi",
+	.id		= 1,
+	.dev		= {
+		.platform_data	= &sh_sdhi1_info,
+	},
+	.num_resources	= ARRAY_SIZE(sdhi1_resources),
+	.resource	= sdhi1_resources,
+};
+
 static struct platform_device *ag5evm_devices[] __initdata = {
 	&eth_device,
 	&keysc_device,
 	&fsi_device,
 	&mmc_device,
+	&irda_device,
+	&lcdc0_device,
+	&mipidsi0_device,
+	&sdhi0_device,
+	&sdhi1_device,
 };
 
 static struct map_desc ag5evm_io_desc[] __initdata = {
@@ -223,6 +464,8 @@ void __init ag5evm_init_irq(void)
 	__raw_writel(__raw_readl(PINTER0A) | (1<<29), PINTER0A);
 	__raw_writew(__raw_readw(PINTCR0A) | (2<<10), PINTCR0A);
 }
+
+#define DSI0PHYCR	0xe615006c
 
 static void __init ag5evm_init(void)
 {
@@ -286,6 +529,46 @@ static void __init ag5evm_init(void)
 	gpio_request(GPIO_FN_FSIAIBT, NULL);
 	gpio_request(GPIO_FN_FSIAISLD, NULL);
 	gpio_request(GPIO_FN_FSIAOSLD, NULL);
+
+	/* IrDA */
+	gpio_request(GPIO_FN_PORT241_IRDA_OUT, NULL);
+	gpio_request(GPIO_FN_PORT242_IRDA_IN,  NULL);
+	gpio_request(GPIO_FN_PORT243_IRDA_FIRSEL, NULL);
+
+	/* LCD panel */
+	gpio_request(GPIO_PORT217, NULL); /* RESET */
+	gpio_direction_output(GPIO_PORT217, 0);
+	mdelay(1);
+	gpio_set_value(GPIO_PORT217, 1);
+	mdelay(100);
+
+	/* LCD backlight controller */
+	gpio_request(GPIO_PORT235, NULL); /* RESET */
+	gpio_direction_output(GPIO_PORT235, 0);
+	lcd_backlight_reset();
+
+	/* MIPI-DSI clock setup */
+	__raw_writel(0x2a809010, DSI0PHYCR);
+
+	/* enable SDHI0 on CN15 [SD I/F] */
+	gpio_request(GPIO_FN_SDHICD0, NULL);
+	gpio_request(GPIO_FN_SDHIWP0, NULL);
+	gpio_request(GPIO_FN_SDHICMD0, NULL);
+	gpio_request(GPIO_FN_SDHICLK0, NULL);
+	gpio_request(GPIO_FN_SDHID0_3, NULL);
+	gpio_request(GPIO_FN_SDHID0_2, NULL);
+	gpio_request(GPIO_FN_SDHID0_1, NULL);
+	gpio_request(GPIO_FN_SDHID0_0, NULL);
+
+	/* enable SDHI1 on CN4 [WLAN I/F] */
+	gpio_request(GPIO_FN_SDHICLK1, NULL);
+	gpio_request(GPIO_FN_SDHICMD1_PU, NULL);
+	gpio_request(GPIO_FN_SDHID1_3_PU, NULL);
+	gpio_request(GPIO_FN_SDHID1_2_PU, NULL);
+	gpio_request(GPIO_FN_SDHID1_1_PU, NULL);
+	gpio_request(GPIO_FN_SDHID1_0_PU, NULL);
+	gpio_request(GPIO_PORT114, "sdhi1_power");
+	gpio_direction_output(GPIO_PORT114, 0);
 
 #ifdef CONFIG_CACHE_L2X0
 	/* Shared attribute override enable, 64K*8way */

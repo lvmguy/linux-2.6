@@ -395,10 +395,9 @@ static int __devinit xenfb_probe(struct xenbus_device *dev,
 	spin_lock_init(&info->dirty_lock);
 	spin_lock_init(&info->resize_lock);
 
-	info->fb = vmalloc(fb_size);
+	info->fb = vzalloc(fb_size);
 	if (info->fb == NULL)
 		goto error_nomem;
-	memset(info->fb, 0, fb_size);
 
 	info->nr_pages = (fb_size + PAGE_SIZE - 1) >> PAGE_SHIFT;
 
@@ -491,12 +490,12 @@ xenfb_make_preferred_console(void)
 	if (console_set_on_cmdline)
 		return;
 
-	acquire_console_sem();
+	console_lock();
 	for_each_console(c) {
 		if (!strcmp(c->name, "tty") && c->index == 0)
 			break;
 	}
-	release_console_sem();
+	console_unlock();
 	if (c) {
 		unregister_console(c);
 		c->flags |= CON_CONSDEV;

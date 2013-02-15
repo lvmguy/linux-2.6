@@ -185,7 +185,7 @@ struct pch_can_priv {
 
 static struct can_bittiming_const pch_can_bittiming_const = {
 	.name = KBUILD_MODNAME,
-	.tseg1_min = 1,
+	.tseg1_min = 2,
 	.tseg1_max = 16,
 	.tseg2_min = 1,
 	.tseg2_max = 8,
@@ -653,7 +653,7 @@ static int pch_can_rx_normal(struct net_device *ndev, u32 obj_num, int quota)
 	u16 data_reg;
 
 	do {
-		/* Reading the messsage object from the Message RAM */
+		/* Reading the message object from the Message RAM */
 		iowrite32(PCH_CMASK_RX_TX_GET, &priv->regs->ifregs[0].cmask);
 		pch_can_rw_msg_obj(&priv->regs->ifregs[0].creq, obj_num);
 
@@ -959,13 +959,13 @@ static void __devexit pch_can_remove(struct pci_dev *pdev)
 	struct pch_can_priv *priv = netdev_priv(ndev);
 
 	unregister_candev(priv->ndev);
-	pci_iounmap(pdev, priv->regs);
 	if (priv->use_msi)
 		pci_disable_msi(priv->dev);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
 	pci_set_drvdata(pdev, NULL);
 	pch_can_reset(priv);
+	pci_iounmap(pdev, priv->regs);
 	free_candev(priv->ndev);
 }
 
@@ -1238,6 +1238,7 @@ static int __devinit pch_can_probe(struct pci_dev *pdev,
 		priv->use_msi = 0;
 	} else {
 		netdev_err(ndev, "PCH CAN opened with MSI\n");
+		pci_set_master(pdev);
 		priv->use_msi = 1;
 	}
 

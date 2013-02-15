@@ -469,6 +469,8 @@ static u8 ib_rate_to_delay[IB_RATE_120_GBPS + 1] = {
 #define IB_7322_LT_STATE_RECOVERIDLE     0x0f
 #define IB_7322_LT_STATE_CFGENH          0x10
 #define IB_7322_LT_STATE_CFGTEST         0x11
+#define IB_7322_LT_STATE_CFGWAITRMTTEST  0x12
+#define IB_7322_LT_STATE_CFGWAITENH      0x13
 
 /* link state machine states from IBC */
 #define IB_7322_L_STATE_DOWN             0x0
@@ -498,8 +500,10 @@ static const u8 qib_7322_physportstate[0x20] = {
 		IB_PHYSPORTSTATE_LINK_ERR_RECOVER,
 	[IB_7322_LT_STATE_CFGENH] = IB_PHYSPORTSTATE_CFG_ENH,
 	[IB_7322_LT_STATE_CFGTEST] = IB_PHYSPORTSTATE_CFG_TRAIN,
-	[0x12] = IB_PHYSPORTSTATE_CFG_TRAIN,
-	[0x13] = IB_PHYSPORTSTATE_CFG_WAIT_ENH,
+	[IB_7322_LT_STATE_CFGWAITRMTTEST] =
+		IB_PHYSPORTSTATE_CFG_TRAIN,
+	[IB_7322_LT_STATE_CFGWAITENH] =
+		IB_PHYSPORTSTATE_CFG_WAIT_ENH,
 	[0x14] = IB_PHYSPORTSTATE_CFG_TRAIN,
 	[0x15] = IB_PHYSPORTSTATE_CFG_TRAIN,
 	[0x16] = IB_PHYSPORTSTATE_CFG_TRAIN,
@@ -623,7 +627,6 @@ struct qib_chippport_specific {
 	u8 ibmalfusesnap;
 	struct qib_qsfp_data qsfp_data;
 	char epmsgbuf[192]; /* for port error interrupt msg buffer */
-	u8 bounced;
 };
 
 static struct {
@@ -1693,7 +1696,9 @@ static void handle_serdes_issues(struct qib_pportdata *ppd, u64 ibcst)
 		break;
 	}
 
-	if (ibclt == IB_7322_LT_STATE_CFGTEST &&
+	if (((ibclt >= IB_7322_LT_STATE_CFGTEST &&
+	      ibclt <= IB_7322_LT_STATE_CFGWAITENH) ||
+	     ibclt == IB_7322_LT_STATE_LINKUP) &&
 	    (ibcst & SYM_MASK(IBCStatusA_0, LinkSpeedQDR))) {
 		force_h1(ppd);
 		ppd->cpspec->qdr_reforce = 1;
@@ -1881,23 +1886,7 @@ static noinline void handle_7322_p_errors(struct qib_pportdata *ppd)
 		    IB_PHYSPORTSTATE_DISABLED)
 			qib_set_ib_7322_lstate(ppd, 0,
 			       QLOGIC_IB_IBCC_LINKINITCMD_DISABLE);
-		else {
-			u32 lstate;
-			/*
-			 * We need the current logical link state before
-			 * lflags are set in handle_e_ibstatuschanged.
-			 */
-			lstate = qib_7322_iblink_state(ibcs);
-
-			if (IS_QMH(dd) && !ppd->cpspec->bounced &&
-			    ltstate == IB_PHYSPORTSTATE_LINKUP &&
-			    (lstate >= IB_PORT_INIT &&
-				lstate <= IB_PORT_ACTIVE)) {
-				ppd->cpspec->bounced = 1;
-				qib_7322_set_ib_cfg(ppd, QIB_IB_CFG_LSTATE,
-					IB_LINKCMD_DOWN | IB_LINKINITCMD_POLL);
-			}
-
+		else
 			/*
 			 * Since going into a recovery state causes the link
 			 * state to go down and since recovery is transitory,
@@ -1911,7 +1900,6 @@ static noinline void handle_7322_p_errors(struct qib_pportdata *ppd)
 			    ltstate != IB_PHYSPORTSTATE_RECOVERY_WAITRMT &&
 			    ltstate != IB_PHYSPORTSTATE_RECOVERY_IDLE)
 				qib_handle_e_ibstatuschanged(ppd, ibcs);
-		}
 	}
 	if (*msg && iserr)
 		qib_dev_porterr(dd, ppd->port, "%s error\n", msg);
@@ -2380,6 +2368,11 @@ static int qib_7322_bringup_serdes(struct qib_pportdata *ppd)
 	ppd->p_rcvctrl |= SYM_MASK(RcvCtrl_0, RcvIBPortEnable);
 	qib_write_kreg_port(ppd, krp_rcvctrl, ppd->p_rcvctrl);
 	spin_unlock_irqrestore(&dd->cspec->rcvmod_lock, flags);
+
+	/* Hold the link state machine for mezz boards */
+	if (IS_QMH(dd) || IS_QME(dd))
+		qib_set_ib_7322_lstate(ppd, 0,
+				       QLOGIC_IB_IBCC_LINKINITCMD_DISABLE);
 
 	/* Also enable IBSTATUSCHG interrupt.  */
 	val = qib_read_kreg_port(ppd, krp_errmask);
@@ -3312,7 +3305,7 @@ static int qib_do_7322_reset(struct qib_devdata *dd)
 	/*
 	 * Keep chip from being accessed until we are ready.  Use
 	 * writeq() directly, to allow the write even though QIB_PRESENT
-	 * isnt' set.
+	 * isn't set.
 	 */
 	dd->flags &= ~(QIB_INITTED | QIB_PRESENT | QIB_BADINTR);
 	dd->flags |= QIB_DOING_RESET;
@@ -3740,7 +3733,7 @@ static int qib_7322_set_ib_cfg(struct qib_pportdata *ppd, int which, u32 val)
 		/*
 		 * As with width, only write the actual register if the
 		 * link is currently down, otherwise takes effect on next
-		 * link change.  Since setting is being explictly requested
+		 * link change.  Since setting is being explicitly requested
 		 * (via MAD or sysfs), clear autoneg failure status if speed
 		 * autoneg is enabled.
 		 */
@@ -4176,7 +4169,7 @@ static void rcvctrl_7322_mod(struct qib_pportdata *ppd, unsigned int op,
 		 * Init the context registers also; if we were
 		 * disabled, tail and head should both be zero
 		 * already from the enable, but since we don't
-		 * know, we have to do it explictly.
+		 * know, we have to do it explicitly.
 		 */
 		val = qib_read_ureg32(dd, ur_rcvegrindextail, ctxt);
 		qib_write_ureg(dd, ur_rcvegrindexhead, val, ctxt);
@@ -5595,9 +5588,16 @@ static void qsfp_7322_event(struct work_struct *work)
 	 * even on failure to read cable information.  We don't
 	 * get here for QME, so IS_QME check not needed here.
 	 */
-	le2 = (!ret && qd->cache.atten[1] >= qib_long_atten &&
-	       !ppd->dd->cspec->r1 && QSFP_IS_CU(qd->cache.tech)) ?
-		LE2_5m : LE2_DEFAULT;
+	if (!ret && !ppd->dd->cspec->r1) {
+		if (QSFP_IS_ACTIVE_FAR(qd->cache.tech))
+			le2 = LE2_QME;
+		else if (qd->cache.atten[1] >= qib_long_atten &&
+			 QSFP_IS_CU(qd->cache.tech))
+			le2 = LE2_5m;
+		else
+			le2 = LE2_DEFAULT;
+	} else
+		le2 = LE2_DEFAULT;
 	ibsd_wr_allchans(ppd, 13, (le2 << 7), BMASK(9, 7));
 	init_txdds_table(ppd, 0);
 }
@@ -5702,6 +5702,11 @@ static void set_no_qsfp_atten(struct qib_devdata *dd, int change)
 				ppd->cpspec->h1_val = h1;
 			/* now change the IBC and serdes, overriding generic */
 			init_txdds_table(ppd, 1);
+			/* Re-enable the physical state machine on mezz boards
+			 * now that the correct settings have been set. */
+			if (IS_QMH(dd) || IS_QME(dd))
+				qib_set_ib_7322_lstate(ppd, 0,
+					    QLOGIC_IB_IBCC_LINKINITCMD_SLEEP);
 			any++;
 		}
 		if (*nxt == '\n')
@@ -7302,12 +7307,17 @@ static void ibsd_wr_allchans(struct qib_pportdata *ppd, int addr, unsigned data,
 static void serdes_7322_los_enable(struct qib_pportdata *ppd, int enable)
 {
 	u64 data = qib_read_kreg_port(ppd, krp_serdesctrl);
-	printk(KERN_INFO QIB_DRV_NAME " IB%u:%u Turning LOS %s\n",
-		ppd->dd->unit, ppd->port, (enable ? "on" : "off"));
-	if (enable)
+	u8 state = SYM_FIELD(data, IBSerdesCtrl_0, RXLOSEN);
+
+	if (enable && !state) {
+		printk(KERN_INFO QIB_DRV_NAME " IB%u:%u Turning LOS on\n",
+			ppd->dd->unit, ppd->port);
 		data |= SYM_MASK(IBSerdesCtrl_0, RXLOSEN);
-	else
+	} else if (!enable && state) {
+		printk(KERN_INFO QIB_DRV_NAME " IB%u:%u Turning LOS off\n",
+			ppd->dd->unit, ppd->port);
 		data &= ~SYM_MASK(IBSerdesCtrl_0, RXLOSEN);
+	}
 	qib_write_kreg_port(ppd, krp_serdesctrl, data);
 }
 
@@ -7484,7 +7494,7 @@ static int serdes_7322_init_new(struct qib_pportdata *ppd)
 	/*       Baseline Wander Correction Gain [13:4-0] (leave as default) */
 	/*       Baseline Wander Correction Gain [3:7-5] (leave as default) */
 	/*       Data Rate Select [5:7-6] (leave as default) */
-	/*       RX Parralel Word Width [3:10-8] (leave as default) */
+	/*       RX Parallel Word Width [3:10-8] (leave as default) */
 
 	/* RX REST */
 	/*       Single- or Multi-channel reset */
@@ -7535,7 +7545,8 @@ static int serdes_7322_init_new(struct qib_pportdata *ppd)
 	ibsd_wr_allchans(ppd, 4, (1 << 10), BMASK(10, 10));
 	tstart = get_jiffies_64();
 	while (chan_done &&
-	       !time_after64(tstart, tstart + msecs_to_jiffies(500))) {
+	       !time_after64(get_jiffies_64(),
+			tstart + msecs_to_jiffies(500))) {
 		msleep(20);
 		for (chan = 0; chan < SERDES_CHANS; ++chan) {
 			rxcaldone = ahb_mod(ppd->dd, IBSD(ppd->hw_pidx),
