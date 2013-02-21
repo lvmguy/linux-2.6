@@ -1719,13 +1719,7 @@ static int basic_message(struct dm_cache_policy *pe, unsigned argc, char **argv)
 {
 	struct policy *p = to_policy(pe);
 
-	if (argc != 3)
-		return -EINVAL;
-
-	if (!strcasecmp(argv[0], "set_config"))
-		return process_config_option(p, argv + 1, false);
-
-	return -EINVAL;
+	return (argc == 2) ? process_config_option(p, argv, false) : -EINVAL;
 }
 
 static int basic_status(struct dm_cache_policy *pe, status_type_t type,
@@ -1814,10 +1808,10 @@ static struct dm_cache_policy *basic_policy_create(dm_cblock_t cache_size,
 		{ &queue_add_filo_mru,      &queue_del_fifo_filo,	&queue_evict_default },		/* p_filo */
 		{ &queue_add_default_tail,  &queue_del_default,		&queue_evict_default },		/* p_lru */
 		{ &queue_add_filo_mru,      &queue_del_default,		&queue_evict_default },		/* p_mru */
-		{ &queue_add_lfu,	    &queue_del_lfu_mfu,		&queue_evict_lfu_mfu },		/* p_lfu */
-		{ &queue_add_lfu_ws,	    &queue_del_lfu_mfu,		&queue_evict_lfu_mfu },		/* p_lfu_ws */
-		{ &queue_add_mfu,	    &queue_del_lfu_mfu,		&queue_evict_lfu_mfu },		/* p_mfu */
-		{ &queue_add_mfu_ws,	    &queue_del_lfu_mfu,		&queue_evict_lfu_mfu },		/* p_mfu_ws */
+		{ &queue_add_lfu,	    &queue_del_lfu,		&queue_evict_lfu_mfu },		/* p_lfu */
+		{ &queue_add_lfu_ws,	    &queue_del_lfu,		&queue_evict_lfu_mfu },		/* p_lfu_ws */
+		{ &queue_add_mfu,	    &queue_del_mfu,		&queue_evict_lfu_mfu },		/* p_mfu */
+		{ &queue_add_mfu_ws,	    &queue_del_mfu,		&queue_evict_lfu_mfu },		/* p_mfu_ws */
 		{ &queue_add_multiqueue,    &queue_del_multiqueue,	&queue_evict_multiqueue },	/* p_multiqueue */
 		{ &queue_add_multiqueue_ws, &queue_del_multiqueue,	&queue_evict_multiqueue },	/* p_multiqueue_ws */
 		{ &queue_add_noop,	    NULL,			NULL },				/* p_noop */

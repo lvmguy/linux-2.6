@@ -128,7 +128,7 @@ struct cache {
 	dm_cblock_t cache_size;
 
 	/*
-	 * Fields for converting from sectors to blocks etc.
+	 * Fields for converting from sectors to blocks.
 	 */
 	sector_t sectors_per_block;
 	int sectors_per_block_shift;
@@ -793,8 +793,6 @@ static void issue_copy(struct dm_cache_migration *mg)
 	if (mg->writeback || mg->demote)
 		avoid = !is_dirty(cache, mg->cblock) ||
 			is_discarded_oblock(cache, mg->old_oblock);
-	else if (!mg->promote)
-		avoid = true;
 	else
 		avoid = is_discarded_oblock(cache, mg->new_oblock);
 
@@ -879,14 +877,14 @@ static void quiesce_migration(struct dm_cache_migration *mg)
 
 static void promote(struct cache *cache, struct prealloc *structs,
 		    dm_oblock_t oblock, dm_cblock_t cblock,
-		    struct dm_bio_prison_cell *cell, struct bio *bio)
+		    struct dm_bio_prison_cell *cell)
 {
 	struct dm_cache_migration *mg = prealloc_get_migration(structs);
 
 	mg->err = false;
 	mg->writeback = false;
 	mg->demote = false;
-	mg->promote = (bio_sectors(bio) == cache->sectors_per_block && bio_data_dir(bio) == WRITE) ? false : true;
+	mg->promote = true;
 	mg->cache = cache;
 	mg->new_oblock = oblock;
 	mg->cblock = cblock;
@@ -923,15 +921,14 @@ static void demote_then_promote(struct cache *cache, struct prealloc *structs,
 				dm_oblock_t old_oblock, dm_oblock_t new_oblock,
 				dm_cblock_t cblock,
 				struct dm_bio_prison_cell *old_ocell,
-				struct dm_bio_prison_cell *new_ocell,
-				struct bio *bio)
+				struct dm_bio_prison_cell *new_ocell)
 {
 	struct dm_cache_migration *mg = prealloc_get_migration(structs);
 
 	mg->err = false;
 	mg->writeback = false;
 	mg->demote = true;
-	mg->promote = (bio_sectors(bio) == cache->sectors_per_block && bio_data_dir(bio) == WRITE) ? false : true;
+	mg->promote = true;
 	mg->cache = cache;
 	mg->old_oblock = old_oblock;
 	mg->new_oblock = new_oblock;
@@ -1089,7 +1086,7 @@ static void process_bio(struct cache *cache, struct prealloc *structs,
 
 	case POLICY_NEW:
 		atomic_inc(&cache->stats.promotion);
-		promote(cache, structs, block, lookup_result.cblock, new_ocell, bio);
+		promote(cache, structs, block, lookup_result.cblock, new_ocell);
 		release_cell = false;
 		break;
 
@@ -1114,7 +1111,7 @@ static void process_bio(struct cache *cache, struct prealloc *structs,
 
 		demote_then_promote(cache, structs, lookup_result.old_oblock,
 				    block, lookup_result.cblock,
-				    old_ocell, new_ocell, bio);
+				    old_ocell, new_ocell);
 		release_cell = false;
 		break;
 
@@ -2336,22 +2333,22 @@ static int cache_status(struct dm_target *ti, status_type_t type,
 
 static int process_config_option(struct cache *cache, char **argv)
 {
-	if (!strcasecmp(argv[1], "migration_threshold")) {
+	if (!strcasecmp(argv[0], "migration_threshold")) {
 		unsigned long tmp;
 
-		if (kstrtoul(argv[2], 10, &tmp))
+		if (kstrtoul(argv[1], 10, &tmp))
 			return -EINVAL;
 
 		cache->migration_threshold = tmp;
 
-	} else
-		return NOT_CORE_OPTION;
+		return 0;
+	}
 
-	return 0;
+	return NOT_CORE_OPTION;
 }
 
 /*
- * Supports set_config <key> <value>, or whatever your policy has implemented.
+ * Supports <key> <value>, or whatever your policy has implemented.
  *
  * The key migration_threshold is supported by the cache target core.
  */
@@ -2360,16 +2357,12 @@ static int cache_message(struct dm_target *ti, unsigned argc, char **argv)
 	int r;
 	struct cache *cache = ti->private;
 
-	if (argc != 3)
+	if (argc != 2)
 		return -EINVAL;
 
-	if (!strcasecmp(argv[0], "set_config")) {
-		r = process_config_option(cache, argv);
-		if (r != NOT_CORE_OPTION)
-			return r;
-	}
+	r = process_config_option(cache, argv);
 
-	return policy_message(cache->policy, argc - 1, argv + 1);
+	return (r == NOT_CORE_OPTION) ? policy_message(cache->policy, argc, argv) : r;
 }
 
 static int cache_iterate_devices(struct dm_target *ti,

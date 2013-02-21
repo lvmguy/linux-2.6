@@ -167,6 +167,8 @@ static int background_status(struct dm_cache_policy *pe, status_type_t type,
 	return r;
 }
 
+#define	NOT_BACKGROUND_OPTION	1
+
 static int process_config_option(struct policy *p, char **argv, bool set_ctr_arg)
 {
 	if (!strcasecmp(argv[0], threshold_string)) {
@@ -185,10 +187,10 @@ static int process_config_option(struct policy *p, char **argv, bool set_ctr_arg
 
 		p->threshold = to_cblock(tmp);
 
-	} else
-		return 1; /* Inform caller it's not our option. */
+		return 0;
+	}
 
-	return 0;
+	return NOT_BACKGROUND_OPTION; /* Inform caller it's not our option. */
 }
 
 static int background_message(struct dm_cache_policy *pe, unsigned argc, char **argv)
@@ -196,14 +198,12 @@ static int background_message(struct dm_cache_policy *pe, unsigned argc, char **
 	int r;
 	struct policy *p = to_policy(pe);
 
-	if (argc != 3)
+	if (argc != 2)
 		return -EINVAL;
 
-	r = !strcasecmp(argv[0], "set_config") ? process_config_option(p, argv + 1, false) : 1;
-	if (r == 1) /* Message not for us -> hand over to underlying policy plugin. */
-		r = policy_message(p->real_policy, argc, argv);
+	r = process_config_option(p, argv, false);
 
-	return r;
+	return (r == NOT_BACKGROUND_OPTION) ? policy_message(p->real_policy, argc, argv) : r;
 }
 
 /* Init the policy plugin interface function pointers. */
