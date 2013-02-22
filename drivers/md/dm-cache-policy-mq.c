@@ -1127,10 +1127,7 @@ static int mq_message(struct dm_cache_policy *p, unsigned argc, char **argv)
 {
 	struct mq_policy *mq = to_mq_policy(p);
 
-	if (argc != 2)
-		return -EINVAL;
-
-	return process_config_option(mq, argv, false);
+	return (argc == 2) ? process_config_option(mq, argv, false) : -EINVAL;
 }
 
 static int mq_status(struct dm_cache_policy *p, status_type_t type,
