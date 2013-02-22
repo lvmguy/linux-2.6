@@ -874,7 +874,7 @@ static int __load_mapping(void *context, uint64_t cblock, void *leaf)
 	int r = 0;
 	bool dirty;
 	__le64 value;
-	__le32 hint_value = 0;
+	void *hint_value = NULL;
 	dm_oblock_t oblock;
 	unsigned flags;
 	struct thunk *thunk = context;
@@ -888,15 +888,14 @@ static int __load_mapping(void *context, uint64_t cblock, void *leaf)
 
 		if (thunk->hints_valid) {
 			r = dm_array_get_value(&cmd->hint_info, cmd->hint_root,
-					       cblock, &hint_value);
+					       cblock, hint_value);
 			if (r && r != -ENODATA)
 				return r;
 		}
 
 		dirty = thunk->respect_dirty_flags ? (flags & M_DIRTY) : true;
-		value = le32_to_cpu(hint_value);
 		r = thunk->fn(thunk->context, oblock, to_cblock(cblock),
-			      dirty, &value, thunk->hints_valid);
+			      dirty, hint_value, thunk->hints_valid);
 	}
 
 	return r;
