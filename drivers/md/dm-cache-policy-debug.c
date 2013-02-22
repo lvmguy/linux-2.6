@@ -529,7 +529,7 @@ static void debug_destroy(struct dm_cache_policy *pe)
 
 static int debug_load_mapping(struct dm_cache_policy *pe,
 			      dm_oblock_t oblock, dm_cblock_t cblock,
-			      uint32_t hint, bool hint_valid)
+			      void *hint, bool hint_valid)
 {
 	int r;
 	struct policy *p = to_policy(pe);

@@ -972,10 +972,11 @@ static int mq_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 
 static int mq_load_mapping(struct dm_cache_policy *p,
 			   dm_oblock_t oblock, dm_cblock_t cblock,
-			   uint32_t hint, bool hint_valid)
+			   void *hint, bool hint_valid)
 {
 	struct mq_policy *mq = to_mq_policy(p);
 	struct entry *e;
+	unsigned value = le32_to_cpu(*((uint32_t *) hint));
 
 	e = alloc_entry(mq);
 	if (!e)
@@ -984,7 +985,7 @@ static int mq_load_mapping(struct dm_cache_policy *p,
 	e->cblock = cblock;
 	e->oblock = oblock;
 	e->in_cache = true;
-	e->hit_count = hint_valid ? hint : 1;
+	e->hit_count = hint_valid ? value : 1;
 	e->generation = mq->generation;
 	push(mq, e);
 
@@ -1002,7 +1003,9 @@ static int mq_walk_mappings(struct dm_cache_policy *p, policy_walk_fn fn,
 	mutex_lock(&mq->lock);
 	for (level = 0; level < NR_QUEUE_LEVELS; level++)
 		list_for_each_entry(e, &mq->cache.qs[level], list) {
-			r = fn(context, e->cblock, e->oblock, e->hit_count);
+			uint32_t value = cpu_to_le32(e->hit_count);
+
+			r = fn(context, e->cblock, e->oblock, (void *) &value);
 			if (r)
 				goto out;
 		}
