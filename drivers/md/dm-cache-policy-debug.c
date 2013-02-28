@@ -686,15 +686,25 @@ static void debug_tick(struct dm_cache_policy *pe)
 	policy_tick(to_policy(pe)->debug_policy);
 }
 
-static int debug_status(struct dm_cache_policy *pe, status_type_t type,
-			unsigned status_flags, char *result, unsigned maxlen)
+static int debug_set_config_value(struct dm_cache_policy *pe,
+				  const char *key, const char *value)
 {
-	return policy_status(to_policy(pe)->debug_policy, type, status_flags, result, maxlen);
+	int r = policy_set_config_value(to_policy(pe)->debug_policy, key, value);
+
+	if (r && r != -EINVAL)
+		DMWARN("set_config_value returned %d", r);
+
+	return r;
 }
 
-static int debug_message(struct dm_cache_policy *pe, unsigned argc, char **argv)
+static int debug_emit_config_values(struct dm_cache_policy *pe, char *result, unsigned maxlen)
 {
-	return policy_message(to_policy(pe)->debug_policy, argc, argv);
+	int r = policy_emit_config_values(to_policy(pe)->debug_policy, result, maxlen);
+
+	if (r && r != -EINVAL)
+		DMWARN("emit_config_values returned %d", r);
+
+	return r;
 }
 
 /* Init the policy plugin interface function pointers. */
@@ -713,13 +723,12 @@ static void init_policy_functions(struct policy *p)
 	p->policy.next_dirty_block = debug_next_dirty_block;
 	p->policy.residency = debug_residency;
 	p->policy.tick = debug_tick;
-	p->policy.status = debug_status;
-	p->policy.message = debug_message;
+	p->policy.emit_config_values = debug_emit_config_values;
+	p->policy.set_config_value = debug_set_config_value;
 }
 
 static struct dm_cache_policy *debug_create(dm_cblock_t cache_blocks,
-					    sector_t origin_sectors, sector_t block_sectors,
-					    int argc, char **argv)
+					    sector_t origin_sectors, sector_t block_sectors)
 {
 	int r;
 	uint64_t origin_blocks = origin_sectors;
@@ -737,8 +746,7 @@ static struct dm_cache_policy *debug_create(dm_cblock_t cache_blocks,
 
 	DMWARN("debugging \"%s\" cache replacement policy", modparms.policy_name);
 	p->debug_policy = dm_cache_policy_create(modparms.policy_name, cache_blocks,
-						 origin_sectors, block_sectors,
-						 argc, argv);
+						 origin_sectors, block_sectors);
 	if (!p->debug_policy)
 		goto bad_dm_cache_policy_create;
 

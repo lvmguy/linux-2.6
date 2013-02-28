@@ -1,4 +1,4 @@
-/*
+	/*
  * Copyright (C) 2012 Red Hat. All rights reserved.
  *
  * This file is released under the GPL.
@@ -48,7 +48,7 @@
  * one of these sequential modes.
  *
  * Two thresholds to switch between random and sequential io mode are defaulting
- * as follows and can be adjusted via the constructor and message interfaces.
+ * as follows and can be adjusted via the targets constructor and message interfaces.
  */
 #define RANDOM_THRESHOLD_DEFAULT 4
 #define SEQUENTIAL_THRESHOLD_DEFAULT 512
@@ -70,12 +70,10 @@ struct io_tracker {
 	unsigned long thresholds[2];
 };
 
-static void iot_init(struct io_tracker *t, int sequential_threshold, int random_threshold)
+static void iot_init(struct io_tracker *t)
 {
 	t->pattern = PATTERN_RANDOM;
 	t->nr_seq_sectors = t->nr_rand_samples = t->next_start_osector = 0;
-	t->thresholds[PATTERN_SEQUENTIAL] = sequential_threshold < 0 ? SEQUENTIAL_THRESHOLD_DEFAULT : sequential_threshold;
-	t->thresholds[PATTERN_RANDOM] = random_threshold < 0 ? RANDOM_THRESHOLD_DEFAULT : random_threshold;
 }
 
 static bool iot_sequential_pattern(struct io_tracker *t)
@@ -268,9 +266,6 @@ struct policy {
 	dm_cblock_t nr_cblocks_allocated;
 
 	struct basic_cache_entry **tmp_entries;
-
-	int threshold_args[2];
-	int mq_tmo_arg, ctype_arg;
 };
 
 /*----------------------------------------------------------------------------*/
@@ -1629,151 +1624,57 @@ static dm_cblock_t basic_residency(struct dm_cache_policy *pe)
 	return to_policy(pe)->nr_cblocks_allocated;
 }
 
-/* ctr/message optional argument parsing. */
-static int process_threshold_option(struct policy *p, char **argv,
-				    enum io_pattern pattern, bool set_ctr_arg)
-{
-	unsigned long tmp;
-
-	if (kstrtoul(argv[1], 10, &tmp))
-		return -EINVAL;
-
-	if (set_ctr_arg) {
-		if (p->threshold_args[pattern] > -1)
-			return -EINVAL;
-
-		p->threshold_args[pattern] = tmp;
-	}
-
-	p->tracker.thresholds[pattern] = tmp;
-
-	return 0;
-}
-
-static int process_multiqueue_timeout_option(struct policy *p, char **argv, bool set_ctr_arg)
-{
-	unsigned long tmp;
-
-	/* multiqueue timeout in milliseconds. */
-	if (kstrtoul(argv[1], 10, &tmp) ||
-	    tmp < 1 || tmp > 24*3600*1000) /* 1 day max :) */
-		return -EINVAL;
-
-	if (IS_MULTIQUEUE(p)) {
-		unsigned long ticks = tmp * HZ / 1000;
-
-		if (set_ctr_arg) {
-			if (p->mq_tmo_arg > -1)
-				return -EINVAL;
-
-			p->mq_tmo_arg = tmp;
-		}
-
-		/* Ensure one tick timeout minimum. */
-		p->queues.mq_tmo = ticks ? ticks : 1;
-
-		return 0;
-	}
-
-	return -EINVAL;
-}
-
-static int process_hits_option(struct policy *p, char **argv, bool set_ctr_arg)
-{
-	unsigned long tmp;
-
-	/* Only allow as ctr argument. */
-	if (!set_ctr_arg)
-		return -EINVAL;
-
-	if (kstrtoul(argv[1], 10, &tmp) || tmp > 1)
-		return -EINVAL;
-
-	if (p->ctype_arg > -1)
-		return -EINVAL;
-
-	p->ctype_arg = tmp;
-	p->queues.ctype = tmp ? T_HITS : T_SECTORS;
-
-	return 0;
-}
-
-static int process_config_option(struct policy *p, char **argv, bool set_ctr_arg)
-{
-	if (!strcasecmp(argv[0], "hits"))
-		return process_hits_option(p, argv, set_ctr_arg);
-
-	else if (!strcasecmp(argv[0], "multiqueue_timeout"))
-		return process_multiqueue_timeout_option(p, argv, set_ctr_arg);
-
-	else if (!strcasecmp(argv[0], "random_threshold"))
-		return process_threshold_option(p, argv, PATTERN_RANDOM, set_ctr_arg);
-
-	else if (!strcasecmp(argv[0], "sequential_threshold"))
-		return process_threshold_option(p, argv, PATTERN_SEQUENTIAL, set_ctr_arg);
-
-	return -EINVAL;
-}
-
-static int basic_message(struct dm_cache_policy *pe, unsigned argc, char **argv)
+static int basic_set_config_value(struct dm_cache_policy *pe,
+				  const char *key, const char *value)
 {
 	struct policy *p = to_policy(pe);
+	unsigned long tmp;
 
-	if (argc != 2)
+	if (kstrtoul(value, 10, &tmp))
 		return -EINVAL;
 
-	return process_config_option(p, argv, false);
+	if (!strcasecmp(key, "hits")) {
+		if (tmp > 1)
+			return -EINVAL;
+
+		p->queues.ctype = tmp ? T_HITS : T_SECTORS;
+
+	} else if (!strcasecmp(key, "multiqueue_timeout")) {
+		if (tmp < 1 || tmp > 24*3600*1000) /* 1 day max :) */
+			return -EINVAL;
+
+		if (IS_MULTIQUEUE(p)) {
+			unsigned long ticks = tmp * HZ / 1000;
+
+			/* Ensure one tick timeout minimum. */
+			p->queues.mq_tmo = ticks ? ticks : 1;
+
+		}
+
+	} else if (!strcasecmp(key, "random_threshold"))
+		p->tracker.thresholds[PATTERN_RANDOM] = tmp;
+
+	else if (!strcasecmp(key, "sequential_threshold"))
+		p->tracker.thresholds[PATTERN_SEQUENTIAL] = tmp;
+
+	else
+		return -EINVAL;
+
+	return 0;
 }
 
-static int basic_status(struct dm_cache_policy *pe, status_type_t type,
-			unsigned status_flags, char *result, unsigned maxlen)
+static int basic_emit_config_values(struct dm_cache_policy *pe, char *result, unsigned maxlen)
 {
 	ssize_t sz = 0;
 	struct policy *p = to_policy(pe);
 
-	switch (type) {
-	case STATUSTYPE_INFO:
-		DMEMIT(" %lu %lu %lu %u",
-		       p->tracker.thresholds[PATTERN_SEQUENTIAL],
-		       p->tracker.thresholds[PATTERN_RANDOM],
-		       p->queues.mq_tmo * 1000 / HZ,
-		       p->queues.ctype);
-		break;
-
-	case STATUSTYPE_TABLE:
-		if (p->ctype_arg > -1)
-			DMEMIT(" hits %d", p->ctype_arg);
-
-		if (p->mq_tmo_arg > -1)
-			DMEMIT(" multiqueue_timeout %d", p->mq_tmo_arg);
-
-		if (p->threshold_args[PATTERN_RANDOM] > -1)
-			DMEMIT(" random_threshold %u", p->threshold_args[PATTERN_RANDOM]);
-
-		if (p->threshold_args[PATTERN_SEQUENTIAL] > -1)
-			DMEMIT(" sequential_threshold %u", p->threshold_args[PATTERN_SEQUENTIAL]);
-	}
+	DMEMIT("8 hits %u multiqueue_timeout %lu random_threshold %lu sequential_threshold %lu",
+	       p->queues.ctype,
+	       p->queues.mq_tmo,
+	       p->tracker.thresholds[PATTERN_RANDOM],
+	       p->tracker.thresholds[PATTERN_SEQUENTIAL]);
 
 	return 0;
-}
-
-static int process_policy_args(struct policy *p, int argc, char **argv)
-{
-	int r;
-	unsigned u;
-
-	p->threshold_args[0] = p->threshold_args[1] = p->mq_tmo_arg = p->ctype_arg = -1;
-
-	if (!argc)
-		return 0;
-
-	if (argc != 2 && argc != 4 && argc != 6 && argc != 8)
-		return -EINVAL;
-
-	for (r = u = 0; u < argc && !r; u += 2)
-		r = process_config_option(p, argv + u, true);
-
-	return r;
 }
 
 /* Init the policy plugin interface function pointers. */
@@ -1792,14 +1693,13 @@ static void init_policy_functions(struct policy *p)
 	p->policy.force_mapping = basic_force_mapping;
 	p->policy.residency = basic_residency;
 	p->policy.tick = NULL;
-	p->policy.status = basic_status;
-	p->policy.message = basic_message;
+	p->policy.emit_config_values = basic_emit_config_values;
+	p->policy.set_config_value = basic_set_config_value;
 }
 
 static struct dm_cache_policy *basic_policy_create(dm_cblock_t cache_size,
 						   sector_t origin_size,
 						   sector_t block_size,
-						   int argc, char **argv,
 						   enum policy_type type)
 {
 	int r;
@@ -1835,13 +1735,7 @@ static struct dm_cache_policy *basic_policy_create(dm_cblock_t cache_size,
 	p->queues.fns = queue_fns + type;
 
 	init_policy_functions(p);
-
-	/* Need to do that before iot_init(). */
-	r = process_policy_args(p, argc, argv);
-	if (r)
-		goto bad_free_policy;
-
-	iot_init(&p->tracker, p->threshold_args[PATTERN_SEQUENTIAL], p->threshold_args[PATTERN_RANDOM]);
+	iot_init(&p->tracker);
 
 	p->cache_size = cache_size;
 	p->find_free_nr_words = bit_set_nr_words(from_cblock(cache_size));
@@ -1850,7 +1744,7 @@ static struct dm_cache_policy *basic_policy_create(dm_cblock_t cache_size,
 	p->block_shift = ffs(block_size);
 	p->origin_size = origin_size;
 	p->calc_threshold_hits = max(from_cblock(cache_size) >> 2, 128U);
-	p->queues.ctype = p->ctype_arg < 0 ? T_HITS : p->queues.ctype;
+	p->queues.ctype = T_HITS;
 	init_promote_threshold(p, false);
 	mutex_init(&p->lock);
 	queue_init(&p->queues.free);
@@ -1917,7 +1811,7 @@ static struct dm_cache_policy *basic_policy_create(dm_cblock_t cache_size,
 		/* Multiple queues. */
 		mqueues = min(max((unsigned) ilog2(block_size << 13), 8U), (unsigned) from_cblock(cache_size));
 		p->jiffies = get_jiffies_64();
-		p->queues.mq_tmo = p->mq_tmo_arg < 0 ? MQ_QUEUE_TMO_DEFAULT : p->queues.mq_tmo;
+		p->queues.mq_tmo = MQ_QUEUE_TMO_DEFAULT;
 	}
 
 
@@ -1949,9 +1843,9 @@ bad_free_policy:
 /* Policy type creation magic. */
 #define __CREATE_POLICY(policy) \
 static struct dm_cache_policy *policy ## _create(dm_cblock_t cache_size, sector_t origin_size, \
-						  sector_t block_size, int argc, char **argv) \
+						  sector_t block_size) \
 { \
-	return basic_policy_create(cache_size, origin_size, block_size, argc, argv, p_ ## policy); \
+	return basic_policy_create(cache_size, origin_size, block_size, p_ ## policy); \
 }
 
 #define	__POLICY_TYPE(policy) \

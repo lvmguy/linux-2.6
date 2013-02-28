@@ -22,7 +22,7 @@ struct policy {
 
 	struct dm_cache_policy *real_policy;
 	dm_cblock_t cache_blocks, threshold;
-	int threshold_arg;
+	sector_t origin_sectors, block_sectors;
 	atomic_t nr_dirty;
 };
 
@@ -140,70 +140,31 @@ static void background_tick(struct dm_cache_policy *pe)
 	policy_tick(to_policy(pe)->real_policy);
 }
 
-static const char *threshold_string = "clean_block_pool_size";
-static int background_status(struct dm_cache_policy *pe, status_type_t type,
-			unsigned status_flags, char *result, unsigned maxlen)
+#define	NOT_OUR_OPTION	1
+
+static int background_set_config_value(struct dm_cache_policy *pe,
+				       const char *key, const char *value)
 {
-	int r = 0;
-	ssize_t sz = 0;
 	struct policy *p = to_policy(pe);
 
-	switch (type) {
-	case STATUSTYPE_INFO:
-		DMEMIT(" <r>%u</r>", atomic_read(&p->nr_dirty)); /* REMOVEME: only for development */
-		break;
-
-	case STATUSTYPE_TABLE:
-		if (p->threshold_arg > -1)
-			DMEMIT("%s %u ", threshold_string, p->threshold_arg);
-
-		DMEMIT("%s ", dm_cache_policy_get_name(p->real_policy));
-	}
-
-	if (sz < maxlen)
-		r = policy_status(p->real_policy, type, status_flags,
-				  result + sz, maxlen - sz);
-
-	return r;
-}
-
-static int process_config_option(struct policy *p, char **argv, bool set_ctr_arg)
-{
-	if (!strcasecmp(argv[0], threshold_string)) {
+	if (!strcasecmp(key, "clean_block_pool_size")) {
 		unsigned long tmp;
 
-		if (kstrtoul(argv[1], 10, &tmp) ||
+		if (kstrtoul(value, 10, &tmp) ||
 		    tmp > from_cblock(p->cache_blocks))
 			return -EINVAL;
 
-		if (set_ctr_arg) {
-			if (p->threshold_arg > -1)
-				return -EINVAL;
-
-			p->threshold_arg = tmp;
-		}
-
 		p->threshold = to_cblock(tmp);
 
-	} else
-		return 1; /* Inform caller it's not our option. */
+		return 0;
 
-	return 0;
-}
+	} else if (!strcasecmp(key, "policy")) {
+		p->real_policy = dm_cache_policy_create(value, p->cache_blocks,
+							p->origin_sectors, p->block_sectors);
+		return (p->real_policy) ? 0 : -ENOMEM;
+	}
 
-static int background_message(struct dm_cache_policy *pe, unsigned argc, char **argv)
-{
-	int r;
-	struct policy *p = to_policy(pe);
-
-	if (argc != 3)
-		return -EINVAL;
-
-	r = !strcasecmp(argv[0], "set_config") ? process_config_option(p, argv + 1, false) : 1;
-	if (r == 1) /* Message not for us -> hand over to underlying policy plugin. */
-		r = policy_message(p->real_policy, argc, argv);
-
-	return r;
+	return policy_set_config_value(p->real_policy, key, value);
 }
 
 /* Init the policy plugin interface function pointers. */
@@ -222,15 +183,12 @@ static void init_policy_functions(struct policy *p)
 	p->policy.next_dirty_block = NULL;
 	p->policy.residency = background_residency;
 	p->policy.tick = background_tick;
-	p->policy.status = background_status;
-	p->policy.message = background_message;
+	p->policy.set_config_value = background_set_config_value;
 }
 
-#define	MIN_ARG	3
 static struct dm_cache_policy *background_create(dm_cblock_t cache_blocks,
 						 sector_t origin_sectors,
-						 sector_t block_sectors,
-						 int argc, char **argv)
+						 sector_t block_sectors)
 {
 	int r;
 	struct policy *p = kzalloc(sizeof(*p), GFP_KERNEL);
@@ -238,29 +196,15 @@ static struct dm_cache_policy *background_create(dm_cblock_t cache_blocks,
 	if (!p)
 		return NULL;
 
-	if (argc < MIN_ARG)
-		goto bad;
-
 	init_policy_functions(p);
 
 	p->cache_blocks = cache_blocks;
+	p->origin_sectors = origin_sectors;
+	p->block_sectors = block_sectors;
 	p->threshold = 0;
-	p->threshold_arg = -1;
 	atomic_set(&p->nr_dirty, 0);
 
-	r = process_config_option(p, argv, true);
-	if (r)
-		goto bad;
-
-	p->real_policy = dm_cache_policy_create(argv[MIN_ARG - 1], cache_blocks,
-						origin_sectors, block_sectors,
-						argc - MIN_ARG, argv + MIN_ARG);
-	if (p->real_policy)
-		return &p->policy;
-
-bad:
-	kfree(p);
-	return NULL;
+	return &p->policy;
 }
 
 /*----------------------------------------------------------------------------*/
