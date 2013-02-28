@@ -188,7 +188,6 @@ static struct dm_cache_policy *background_create(dm_cblock_t cache_blocks,
 						 sector_t origin_sectors,
 						 sector_t block_sectors)
 {
-	int r;
 	struct policy *p = kzalloc(sizeof(*p), GFP_KERNEL);
 
 	if (!p)
