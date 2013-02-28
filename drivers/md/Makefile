@@ -52,9 +52,9 @@ obj-$(CONFIG_DM_THIN_PROVISIONING)	+= dm-thin-pool.o
 obj-$(CONFIG_DM_VERITY)		+= dm-verity.o
 obj-$(CONFIG_DM_CACHE)		+= dm-cache.o
 obj-$(CONFIG_DM_CACHE_MQ)	+= dm-cache-mq.o
-obj-$(CONFIG_DM_CACHE_CLEANER)	+= dm-cache-cleaner.o
 obj-$(CONFIG_DM_CACHE_BACKGROUND) += dm-cache-background.o
 obj-$(CONFIG_DM_CACHE_BASIC)	+= dm-cache-basic.o
+obj-$(CONFIG_DM_CACHE_CLEANER)	+= dm-cache-cleaner.o
 obj-$(CONFIG_DM_CACHE_DEBUG)	+= dm-cache-debug.o
 obj-$(CONFIG_DM_VERITY)		+= dm-verity.o
 

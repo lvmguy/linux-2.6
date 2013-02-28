@@ -89,7 +89,7 @@ static int background_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock
 
 static int background_load_mapping(struct dm_cache_policy *pe,
 				   dm_oblock_t oblock, dm_cblock_t cblock,
-				   uint32_t hint, bool hint_valid)
+				   void *hint, bool hint_valid)
 {
 	return policy_load_mapping(to_policy(pe)->real_policy, oblock, cblock, hint, hint_valid);
 }
@@ -139,8 +139,6 @@ static void background_tick(struct dm_cache_policy *pe)
 {
 	policy_tick(to_policy(pe)->real_policy);
 }
-
-#define	NOT_OUR_OPTION	1
 
 static int background_set_config_value(struct dm_cache_policy *pe,
 				       const char *key, const char *value)

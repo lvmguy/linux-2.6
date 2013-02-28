@@ -23,6 +23,7 @@
  */
 
 #include "dm-cache-policy.h"
+#include "dm-cache-policy-internal.h"
 #include "dm.h"
 
 #include <linux/btree.h>
@@ -1374,51 +1375,16 @@ static void basic_destroy(struct dm_cache_policy *pe)
 	kfree(p);
 }
 
-/* FIXME: converters can disappear in case of larger hint cast in metadata. */
-static const uint16_t high_flag = 0x8000;
-static const uint32_t hint_lmask = 0xFFFF;
-static const uint32_t hint_hmask = 0xFFFF0000;
-static uint16_t count_to_hint(unsigned val)
-{
-	uint16_t vh, vl;
-
-	vl = val & hint_lmask;
-	vh = (val & hint_hmask) >> 16;
-
-	if (vh)
-		return vh | high_flag;
-	else
-		return vl & ~high_flag;
-}
-
-static uint32_t counts_to_hint(unsigned read, unsigned write)
-{
-	return count_to_hint(read) & (count_to_hint(write) << 16);
-}
-
-static unsigned check_high(uint16_t v)
-{
-	unsigned r = v;
-
-	if (r & high_flag)
-		r = (r & ~high_flag) << 16;
-
-	return r;
-}
-
-static void hint_to_counts(uint32_t val, unsigned *read, unsigned *write)
-{
-	*read  = check_high(val & hint_lmask);
-	*write = check_high((val & hint_hmask) >> 16);
-
-}
-
-static void sort_in_cache_entry(struct policy *p, struct basic_cache_entry *e)
+static void sort_in_cache_entry(struct policy *p, struct basic_cache_entry *e,
+				bool hint_valid)
 {
 	struct list_head *elt;
 	struct basic_cache_entry *cur;
 
 	list_for_each(elt, &p->queues.used) {
+		if (!hint_valid)
+			break;
+
 		cur = list_entry(elt, struct basic_cache_entry, ce.list);
 		if (e->ce.count[T_HITS][0] > cur->ce.count[T_HITS][0])
 			break;
@@ -1473,7 +1439,7 @@ static int basic_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
 
 static int basic_load_mapping(struct dm_cache_policy *pe,
 			      dm_oblock_t oblock, dm_cblock_t cblock,
-			      uint32_t hint, bool hint_valid)
+			      void *hint, bool hint_valid)
 {
 	struct policy *p = to_policy(pe);
 	struct basic_cache_entry *e;
@@ -1486,23 +1452,25 @@ static int basic_load_mapping(struct dm_cache_policy *pe,
 	e->ce.oblock = oblock;
 
 	if (hint_valid) {
-		unsigned reads, writes;
+		uint32_t *hints = hint;
+		unsigned hint_size = dm_cache_policy_get_hint_size(pe);
 
-		hint_to_counts(hint, &reads, &writes);
-		e->ce.count[T_HITS][0] = reads;
-		e->ce.count[T_HITS][1] = writes;
+		e->ce.count[T_HITS][0] = le32_to_cpu(hints[0]);
 
-		if (IS_MULTIQUEUE(p) || IS_TWOQUEUE(p) || IS_LFU_MFU_WS(p)) {
-			/* FIXME: store also in larger hints rather than making up. */
-			e->ce.count[T_SECTORS][0] = reads << p->block_shift;
-			e->ce.count[T_SECTORS][1] = writes << p->block_shift;
+		if (hint_size >= 8)
+			e->ce.count[T_HITS][1] = le32_to_cpu(hints[1]);
+
+		if (hint_size == 16) {
+			e->ce.count[T_SECTORS][0] = le32_to_cpu(hints[2]);
+			e->ce.count[T_SECTORS][1] = le32_to_cpu(hints[3]);
 		}
 	}
 
 	if (IS_MULTIQUEUE(p) || IS_TWOQUEUE(p) || IS_LFU_MFU_WS(p))
 		add_cache_entry(p, e);
+
 	else {
-		sort_in_cache_entry(p, e);
+		sort_in_cache_entry(p, e, hint_valid);
 		alloc_cblock_insert_cache_and_count_entry(p, e);
 	}
 
@@ -1521,23 +1489,28 @@ static int basic_walk_mappings(struct dm_cache_policy *pe, policy_walk_fn fn,
 	mutex_lock(&p->lock);
 
 	list_for_each_entry(e, &p->queues.walk, walk) {
-		unsigned reads, writes;
+		uint32_t hints[4];
+		unsigned hint_size = dm_cache_policy_get_hint_size(pe);
 
-		if (IS_MULTIQUEUE_Q2_TWOQUEUE(p) || IS_LFU_MFU_WS(p)) {
-			reads = e->ce.count[T_HITS][0];
-			writes = e->ce.count[T_HITS][1];
-
-		} else {
-			reads = nr++;
+		if (hint_size == 4) {
+			unsigned tmp = nr++;
 
 			if (IS_FILO_MRU(p))
-				reads = from_cblock(p->cache_size) - reads - 1;
+				tmp = from_cblock(p->cache_size) - tmp - 1;
 
-			writes = 0;
+			hints[0] = cpu_to_le32(tmp);
+	
+		} else {
+			hints[0] = cpu_to_le32(e->ce.count[T_HITS][0]);
+			hints[1] = cpu_to_le32(e->ce.count[T_HITS][1]);
+
+			if (hint_size == 16) {
+				hints[2] = cpu_to_le32(e->ce.count[T_SECTORS][0]);
+				hints[3] = cpu_to_le32(e->ce.count[T_SECTORS][1]);
+			}
 		}
 
-		r = fn(context, e->cblock, e->ce.oblock,
-		       counts_to_hint(reads, writes));
+		r = fn(context, e->cblock, e->ce.oblock, &hints);
 		if (r)
 			break;
 	}
@@ -1848,38 +1821,38 @@ static struct dm_cache_policy *policy ## _create(dm_cblock_t cache_size, sector_
 	return basic_policy_create(cache_size, origin_size, block_size, p_ ## policy); \
 }
 
-#define	__POLICY_TYPE(policy) \
+#define	__POLICY_TYPE(policy, hints_size) \
 static struct dm_cache_policy_type policy ## _policy_type = { \
 	.name = #policy, \
-	.hint_size = 4, \
+	.hint_size = hints_size, \
 	.owner = THIS_MODULE, \
 	.create = policy ## _create \
 };
 
-#define	__CREATE_POLICY_TYPE(policy) \
+#define	__CREATE_POLICY_TYPE(policy, hint_size) \
 	__CREATE_POLICY(policy); \
-	__POLICY_TYPE(policy);
+	__POLICY_TYPE(policy, hint_size);
 
 /*
  * Create all fifo_create,filo_create,lru_create,... functions and
  * declare and initialize all fifo_policy_type,filo_policy_type,... structures.
  */
-__CREATE_POLICY_TYPE(basic);
-__CREATE_POLICY_TYPE(dumb);
-__CREATE_POLICY_TYPE(fifo);
-__CREATE_POLICY_TYPE(filo);
-__CREATE_POLICY_TYPE(lfu);
-__CREATE_POLICY_TYPE(lfu_ws);
-__CREATE_POLICY_TYPE(lru);
-__CREATE_POLICY_TYPE(mfu);
-__CREATE_POLICY_TYPE(mfu_ws);
-__CREATE_POLICY_TYPE(mru);
-__CREATE_POLICY_TYPE(multiqueue);
-__CREATE_POLICY_TYPE(multiqueue_ws);
-__CREATE_POLICY_TYPE(noop);
-__CREATE_POLICY_TYPE(random);
-__CREATE_POLICY_TYPE(q2);
-__CREATE_POLICY_TYPE(twoqueue);
+__CREATE_POLICY_TYPE(basic, 16);
+__CREATE_POLICY_TYPE(dumb, 0);
+__CREATE_POLICY_TYPE(fifo, 4);
+__CREATE_POLICY_TYPE(filo, 4);
+__CREATE_POLICY_TYPE(lfu, 8);
+__CREATE_POLICY_TYPE(lfu_ws, 16);
+__CREATE_POLICY_TYPE(lru, 4);
+__CREATE_POLICY_TYPE(mfu, 8);
+__CREATE_POLICY_TYPE(mfu_ws, 16);
+__CREATE_POLICY_TYPE(mru, 4);
+__CREATE_POLICY_TYPE(multiqueue, 8);
+__CREATE_POLICY_TYPE(multiqueue_ws, 16);
+__CREATE_POLICY_TYPE(noop, 0);
+__CREATE_POLICY_TYPE(random, 0);
+__CREATE_POLICY_TYPE(q2, 8);
+__CREATE_POLICY_TYPE(twoqueue, 8);
 
 static struct dm_cache_policy_type *policy_types[] = {
 	&basic_policy_type,
