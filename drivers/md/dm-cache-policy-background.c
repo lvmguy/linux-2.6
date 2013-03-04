@@ -111,7 +111,7 @@ static int background_walk_mappings(struct dm_cache_policy *pe, policy_walk_fn f
 {
 	struct policy *p = to_policy(pe);
 
-	return p->real_policy ? policy_walk_mappings(to_policy(pe)->real_policy, fn, context) : 0;
+	return p->real_policy ? policy_walk_mappings(p->real_policy, fn, context) : 0;
 }
 
 static void background_remove_mapping(struct dm_cache_policy *pe, dm_oblock_t oblock)
