@@ -939,14 +939,19 @@ static int _set_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock, bool 
 
 	e = hash_lookup(mq, oblock);
 	BUG_ON(!e);
-	r = !list_empty(&e->dirty);
 
-	if (dirty) {
-		if (!r)
-			list_add_tail(&e->dirty, &mq->dirty);
+	if (e->in_cache) {
+		r = !list_empty(&e->dirty);
 
-	} else if (r)
-		list_del_init(&e->dirty);
+		if (dirty) {
+			if (!r)
+				list_add_tail(&e->dirty, &mq->dirty);
+
+		} else if (r)
+			list_del_init(&e->dirty);
+
+	} else
+		r = -ENOENT;
 
 	mutex_unlock(&mq->lock);
 

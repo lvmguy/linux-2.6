@@ -628,8 +628,10 @@ static void calc_rw_threshold(struct policy *p)
 		p->hits = 0;
 		init_promote_threshold(p, true);
 
+/* FIXME:
 		pr_alert("promote thresholds = %u/%u queue stats = %u/%u\n",
 			 p->promote_threshold[0], p->promote_threshold[1], p->queues.pre.size, p->queues.post.size);
+*/
 	}
 }
 

@@ -70,8 +70,11 @@ static int background_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
 
 	if (p->real_policy) {
 		r = policy_set_dirty(p->real_policy, oblock);
-		BUG_ON(r < 0);
-		if (!r) {
+		if (r < 0) {
+			BUG_ON(r != -ENOENT);
+			r = 0;
+
+		} else if (!r) {
 			BUG_ON(atomic_read(&p->nr_dirty) > from_cblock(p->cache_blocks));
 			atomic_inc(&p->nr_dirty);
 		}
@@ -87,8 +90,11 @@ static int background_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock
 
 	if (p->real_policy) {
 		r = policy_clear_dirty(p->real_policy, oblock);
-		BUG_ON(r < 0);
-		if (r) {
+		if (r < 0) {
+			BUG_ON(r != -ENOENT);
+			r = 0;
+
+		} else if (r) {
 			BUG_ON(!atomic_read(&p->nr_dirty));
 			atomic_dec(&p->nr_dirty);
 		}
