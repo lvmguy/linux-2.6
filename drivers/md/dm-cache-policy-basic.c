@@ -75,6 +75,8 @@ static void iot_init(struct io_tracker *t)
 {
 	t->pattern = PATTERN_RANDOM;
 	t->nr_seq_sectors = t->nr_rand_samples = t->next_start_osector = 0;
+	t->thresholds[PATTERN_SEQUENTIAL] = SEQUENTIAL_THRESHOLD_DEFAULT;
+	t->thresholds[PATTERN_RANDOM] = RANDOM_THRESHOLD_DEFAULT;
 }
 
 static bool iot_sequential_pattern(struct io_tracker *t)
@@ -199,8 +201,8 @@ struct hash {
 };
 
 enum count_type {
-	T_HITS,
-	T_SECTORS
+	T_SECTORS,
+	T_HITS
 };
 struct track_queue {
 	struct hash hash;
@@ -1628,10 +1630,8 @@ static int basic_set_config_value(struct dm_cache_policy *pe,
 
 	} else if (!strcasecmp(key, "random_threshold"))
 		p->tracker.thresholds[PATTERN_RANDOM] = tmp;
-
 	else if (!strcasecmp(key, "sequential_threshold"))
 		p->tracker.thresholds[PATTERN_SEQUENTIAL] = tmp;
-
 	else
 		return -EINVAL;
 
