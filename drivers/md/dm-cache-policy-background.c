@@ -23,7 +23,6 @@ struct policy {
 	struct dm_cache_policy *real_policy;
 	dm_cblock_t cache_blocks, threshold;
 	sector_t origin_sectors, block_sectors;
-	atomic_t nr_dirty;
 };
 
 /*----------------------------------------------------------------------------*/
@@ -73,10 +72,6 @@ static int background_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
 		if (r < 0) {
 			BUG_ON(r != -ENOENT);
 			r = 0;
-
-		} else if (!r) {
-			BUG_ON(atomic_read(&p->nr_dirty) > from_cblock(p->cache_blocks));
-			atomic_inc(&p->nr_dirty);
 		}
 	}
 
@@ -93,10 +88,6 @@ static int background_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock
 		if (r < 0) {
 			BUG_ON(r != -ENOENT);
 			r = 0;
-
-		} else if (r) {
-			BUG_ON(!atomic_read(&p->nr_dirty));
-			atomic_dec(&p->nr_dirty);
 		}
 	}
 
@@ -140,21 +131,7 @@ static void background_force_mapping(struct dm_cache_policy *pe,
 static int background_writeback_work(struct dm_cache_policy *pe,
 				     dm_oblock_t *oblock, dm_cblock_t *cblock)
 {
-	int r;
-	struct policy *p = to_policy(pe);
-
-	if (from_cblock(p->cache_blocks) - atomic_read(&p->nr_dirty) < from_cblock(p->threshold)) {
-		r = policy_next_dirty_block(p->real_policy, oblock, cblock);
-		if (!r) {
-			BUG_ON(atomic_read(&p->nr_dirty) > from_cblock(p->cache_blocks));
-			BUG_ON(!atomic_read(&p->nr_dirty));
-			atomic_dec(&p->nr_dirty);
-		}
-
-	} else
-		r = -ENOENT;
-
-	return r;
+	return policy_next_dirty_block(to_policy(pe)->real_policy, oblock, cblock);
 }
 
 static dm_cblock_t background_residency(struct dm_cache_policy *pe)
@@ -171,7 +148,14 @@ static void background_tick(struct dm_cache_policy *pe)
 
 static int background_emit_config_values(struct dm_cache_policy *pe, char *result, unsigned maxlen)
 {
-	return policy_emit_config_values(to_policy(pe)->real_policy, result, maxlen);
+	ssize_t sz = 0;
+	struct policy *p = to_policy(pe);
+
+	DMEMIT("4 clean_block_pool_size %u policy %s ",
+	       p->threshold,
+	       dm_cache_policy_get_name(p->real_policy));
+
+	return (sz < maxlen) ? policy_emit_config_values(to_policy(pe)->real_policy, result + sz, maxlen - sz) : 0;
 }
 
 static void init_policy_functions(struct policy *p, bool create);
@@ -181,34 +165,25 @@ static int background_set_config_value(struct dm_cache_policy *pe,
 {
 	struct policy *p = to_policy(pe);
 
-pr_alert("%s ENTRY\n", __func__);
 	if (!strcasecmp(key, "clean_block_pool_size")) {
 		unsigned long tmp;
 
 		if (kstrtoul(value, 10, &tmp) ||
 		    tmp > from_cblock(p->cache_blocks))
-{
-pr_alert("%s clean_block_pool_size FAILED\n", __func__);
 			return -EINVAL;
-}
 
 		p->threshold = to_cblock(tmp);
 
-pr_alert("%s clean_block_pool_size DONE\n", __func__);
 		return 0;
 
 	} else if (!strcasecmp(key, "policy")) {
-pr_alert("value=\"%s\"\n", value);
 		p->real_policy = dm_cache_policy_create(value, p->cache_blocks,
 							p->origin_sectors, p->block_sectors);
 		if (p->real_policy) {
 			init_policy_functions(p, false);
-pr_alert("%s policy DONE\n", __func__);
 			return 0;
-
 		}
 
-pr_alert("%s policy FAILED\n", __func__);
 		return -ENOMEM;
 	}
 
@@ -255,9 +230,7 @@ static struct dm_cache_policy *background_create(dm_cblock_t cache_blocks,
 	p->origin_sectors = origin_sectors;
 	p->block_sectors = block_sectors;
 	p->threshold = 0;
-	atomic_set(&p->nr_dirty, 0);
 
-pr_alert("%s DONE\n", __func__);
 	return &p->policy;
 }
 
