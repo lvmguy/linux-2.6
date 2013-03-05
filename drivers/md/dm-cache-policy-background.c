@@ -169,31 +169,41 @@ static int background_emit_config_values(struct dm_cache_policy *pe, char *resul
 }
 
 static void init_policy_functions(struct policy *p, bool create);
+
 static int background_set_config_value(struct dm_cache_policy *pe,
 				       const char *key, const char *value)
 {
 	struct policy *p = to_policy(pe);
 
+pr_alert("%s ENTRY\n", __func__);
 	if (!strcasecmp(key, "clean_block_pool_size")) {
 		unsigned long tmp;
 
 		if (kstrtoul(value, 10, &tmp) ||
 		    tmp > from_cblock(p->cache_blocks))
+{
+pr_alert("%s clean_block_pool_size FAILED\n", __func__);
 			return -EINVAL;
+}
 
 		p->threshold = to_cblock(tmp);
 
+pr_alert("%s clean_block_pool_size DONE\n", __func__);
 		return 0;
 
 	} else if (!strcasecmp(key, "policy")) {
+pr_alert("value=\"%s\"\n", value);
 		p->real_policy = dm_cache_policy_create(value, p->cache_blocks,
 							p->origin_sectors, p->block_sectors);
 		if (p->real_policy) {
 			init_policy_functions(p, false);
+pr_alert("%s policy DONE\n", __func__);
 			return 0;
 
-		} else
-			return -ENOMEM;
+		}
+
+pr_alert("%s policy FAILED\n", __func__);
+		return -ENOMEM;
 	}
 
 	return p->real_policy ? policy_set_config_value(p->real_policy, key, value) : -EINVAL;
@@ -214,6 +224,7 @@ static void init_policy_functions(struct policy *p, bool create)
 		p->policy.set_config_value = background_set_config_value;
 
 	} else {
+		/* These have NULL checks in the interface inlines. */
 		p->policy.set_dirty = background_set_dirty;
 		p->policy.clear_dirty = background_clear_dirty;
 		p->policy.walk_mappings = background_walk_mappings;
@@ -221,7 +232,6 @@ static void init_policy_functions(struct policy *p, bool create)
 		p->policy.tick = background_tick;
 		p->policy.emit_config_values = background_emit_config_values;
 	}
-
 }
 
 static struct dm_cache_policy *background_create(dm_cblock_t cache_blocks,
@@ -241,6 +251,7 @@ static struct dm_cache_policy *background_create(dm_cblock_t cache_blocks,
 	p->threshold = 0;
 	atomic_set(&p->nr_dirty, 0);
 
+pr_alert("%s DONE\n", __func__);
 	return &p->policy;
 }
 

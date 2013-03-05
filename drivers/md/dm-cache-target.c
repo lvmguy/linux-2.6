@@ -1445,6 +1445,7 @@ static sector_t get_dev_size(struct dm_dev *dev)
  * block size	   : cache unit size in sectors
  * #feature args   : number of feature arguments passed
  * feature args    : 'writeback' or 'writethrough' (one or the other).
+ * policy          : replacement policy selection (eg. 'mq')
  * #policy args    : an even number of arguments corresponding to
  *                   key/value pairs passed to the policy.
  * policy args     : key/value pairs (eg, 'sequential_threshold 1024');
@@ -1726,8 +1727,6 @@ static int set_config_values(struct dm_cache_policy *p, int argc, const char **a
 static int create_cache_policy(struct cache *cache, struct cache_args *ca,
 			       char **error)
 {
-	int r;
-
 	cache->policy =	dm_cache_policy_create(ca->policy_name,
 					       cache->cache_size,
 					       cache->origin_sectors,
@@ -1737,11 +1736,7 @@ static int create_cache_policy(struct cache *cache, struct cache_args *ca,
 		return -ENOMEM;
 	}
 
-	r = set_config_values(cache->policy, ca->policy_argc, ca->policy_argv);
-	if (r)
-		dm_cache_policy_destroy(cache->policy);
-
-	return r;
+	return set_config_values(cache->policy, ca->policy_argc, ca->policy_argv);
 }
 
 /*
@@ -1839,6 +1834,7 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	r = create_cache_policy(cache, ca, error);
 	if (r)
 		goto bad;
+
 	cache->policy_nr_args = ca->policy_argc;
 
 	cmd = dm_cache_metadata_open(cache->metadata_dev->bdev,

@@ -121,19 +121,19 @@ struct dm_cache_metadata {
 
 static void sb_prepare_for_write(struct dm_block_validator *v,
 				 struct dm_block *b,
-				 size_t block_size)
+				 size_t sb_block_size)
 {
 	struct cache_disk_superblock *disk_super = dm_block_data(b);
 
 	disk_super->blocknr = cpu_to_le64(dm_block_location(b));
 	disk_super->csum = cpu_to_le32(dm_bm_checksum(&disk_super->flags,
-						      block_size - sizeof(__le32),
+						      sb_block_size - sizeof(__le32),
 						      SUPERBLOCK_CSUM_XOR));
 }
 
 static int sb_check(struct dm_block_validator *v,
 		    struct dm_block *b,
-		    size_t block_size)
+		    size_t sb_block_size)
 {
 	struct cache_disk_superblock *disk_super = dm_block_data(b);
 	__le32 csum_le;
@@ -153,7 +153,7 @@ static int sb_check(struct dm_block_validator *v,
 	}
 
 	csum_le = cpu_to_le32(dm_bm_checksum(&disk_super->flags,
-					     block_size - sizeof(__le32),
+					     sb_block_size - sizeof(__le32),
 					     SUPERBLOCK_CSUM_XOR));
 	if (csum_le != disk_super->csum) {
 		DMERR("sb_check failed: csum %u: wanted %u",
@@ -201,7 +201,7 @@ static int __superblock_all_zeroes(struct dm_block_manager *bm, int *result)
 	unsigned i;
 	struct dm_block *b;
 	__le64 *data_le, zero = cpu_to_le64(0);
-	unsigned block_size = dm_bm_block_size(bm) / sizeof(__le64);
+	unsigned sb_block_size = dm_bm_block_size(bm) / sizeof(__le64);
 
 	/*
 	 * We can't use a validator here - it may be all zeroes.
@@ -212,7 +212,7 @@ static int __superblock_all_zeroes(struct dm_block_manager *bm, int *result)
 
 	data_le = dm_block_data(b);
 	*result = 1;
-	for (i = 0; i < block_size; i++) {
+	for (i = 0; i < sb_block_size; i++) {
 		if (data_le[i] != zero) {
 			*result = 0;
 			break;
@@ -234,7 +234,7 @@ static void __setup_mapping_info(struct dm_cache_metadata *cmd)
 	dm_array_info_init(&cmd->info, cmd->tm, &vt);
 
 	if (cmd->policy_hint_size) {
-		vt.size = cmd->policy_hint_size;
+		vt.size = sizeof(__le32);
 		dm_array_info_init(&cmd->hint_info, cmd->tm, &vt);
 	}
 }
@@ -874,7 +874,6 @@ static int __load_mapping(void *context, uint64_t cblock, void *leaf)
 	int r = 0;
 	bool dirty;
 	__le64 value;
-	void *hint_value = NULL;
 	dm_oblock_t oblock;
 	unsigned flags;
 	struct thunk *thunk = context;
@@ -884,7 +883,8 @@ static int __load_mapping(void *context, uint64_t cblock, void *leaf)
 	unpack_value(value, &oblock, &flags);
 
 	if (flags & M_VALID) {
-		uint32_t value;
+		__le64 value[4];	/* FIXME: */
+		void *hint_value = &value;
 
 		if (thunk->hints_valid) {
 			r = dm_array_get_value(&cmd->hint_info, cmd->hint_root,
@@ -1074,8 +1074,6 @@ int dm_cache_get_metadata_dev_size(struct dm_cache_metadata *cmd,
 static int begin_hints(struct dm_cache_metadata *cmd, struct dm_cache_policy *policy)
 {
 	int r;
-	__le32 value;
-	size_t hint_size;
 	const char *policy_name = dm_cache_policy_get_name(policy);
 
 	if (!policy_name[0] ||
@@ -1083,6 +1081,10 @@ static int begin_hints(struct dm_cache_metadata *cmd, struct dm_cache_policy *po
 		return -EINVAL;
 
 	if (strcmp(cmd->policy_name, policy_name)) {
+		__le64 value[4];	/* FIXME: */
+		void *hint_value = &value;
+
+		size_t hint_size;
 		strncpy(cmd->policy_name, policy_name, sizeof(cmd->policy_name));
 
 		hint_size = dm_cache_policy_get_hint_size(policy);
@@ -1100,11 +1102,11 @@ static int begin_hints(struct dm_cache_metadata *cmd, struct dm_cache_policy *po
 		if (r)
 			return r;
 
-		value = cpu_to_le32(0);
+		memset(value, 0, sizeof(value));
 		__dm_bless_for_disk(&value);
 		r = dm_array_resize(&cmd->hint_info, cmd->hint_root, 0,
 				    from_cblock(cmd->cache_blocks),
-				    &value, &cmd->hint_root);
+				    hint_value, &cmd->hint_root);
 		if (r)
 			return r;
 	}

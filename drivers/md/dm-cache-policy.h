@@ -136,7 +136,7 @@ struct dm_cache_policy {
 	int (*lookup)(struct dm_cache_policy *p, dm_oblock_t oblock, dm_cblock_t *cblock);
 
 	/*
-	 * oblock must be a mapped block.  Must not block!
+	 * oblock must be a mapped block.  Must not block.
 	 */
 	int (*set_dirty)(struct dm_cache_policy *p, dm_oblock_t oblock);
 	int (*clear_dirty)(struct dm_cache_policy *p, dm_oblock_t oblock);
@@ -215,11 +215,12 @@ struct dm_cache_policy_type {
 	char name[CACHE_POLICY_NAME_SIZE];
 
 	/*
-	 * Policies may store a hint for each each cache block.  Currently
-	 * the size of this hint must be 0 or 4 bytes (to change
-	 * shortly).
+	 * Policies may store a hint for each each cache block.
+	 * Currently the size of this hint must be 0 or 4 bytes but we
+	 * expect to relax this in future.
 	 */
 	size_t hint_size;
+
 	struct module *owner;
 	struct dm_cache_policy *(*create)(dm_cblock_t cache_size,
 					  sector_t origin_size,

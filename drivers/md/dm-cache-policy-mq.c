@@ -14,6 +14,7 @@
 #include <linux/slab.h>
 
 #define DM_MSG_PREFIX "cache-policy-mq"
+#define MQ_VERSION	"1.0.0"
 
 static struct kmem_cache *mq_entry_cache;
 
@@ -51,7 +52,6 @@ static void free_bitset(unsigned long *bits)
  */
 #define RANDOM_THRESHOLD_DEFAULT 4
 #define SEQUENTIAL_THRESHOLD_DEFAULT 512
-#define UNINIT_TUNABLE -1
 
 enum io_pattern {
 	PATTERN_SEQUENTIAL,
@@ -75,6 +75,8 @@ static void iot_init(struct io_tracker *t,
 	t->nr_seq_samples = 0;
 	t->nr_rand_samples = 0;
 	t->last_end_oblock = 0;
+	t->thresholds[PATTERN_RANDOM] = random_threshold;
+	t->thresholds[PATTERN_SEQUENTIAL] = sequential_threshold;
 }
 
 static enum io_pattern iot_pattern(struct io_tracker *t)
@@ -84,10 +86,9 @@ static enum io_pattern iot_pattern(struct io_tracker *t)
 
 static void iot_update_stats(struct io_tracker *t, struct bio *bio)
 {
-	if (bio->bi_sector == from_oblock(t->last_end_oblock) + 1) {
+	if (bio->bi_sector == from_oblock(t->last_end_oblock) + 1)
 		t->nr_seq_samples++;
-
-	} else {
+	else {
 		/*
 		 * Just one non-sequential IO is enough to reset the
 		 * counters.
@@ -834,10 +835,8 @@ static int map(struct mq_policy *mq, dm_oblock_t oblock,
 
 	if (e && e->in_cache)
 		r = cache_entry_found(mq, e, result);
-
 	else if (iot_pattern(&mq->tracker) == PATTERN_SEQUENTIAL)
 		result->op = POLICY_MISS;
-
 	else if (e)
 		r = pre_cache_entry_found(mq, e, can_migrate, discarded_oblock,
 					  data_dir, result);
@@ -847,6 +846,7 @@ static int map(struct mq_policy *mq, dm_oblock_t oblock,
 
 	if (r == -EWOULDBLOCK)
 		result->op = POLICY_MISS;
+
 	return r;
 }
 
@@ -1097,10 +1097,8 @@ static int mq_set_config_value(struct dm_cache_policy *p,
 
 	if (!strcasecmp(key, "random_threshold"))
 		pattern = PATTERN_RANDOM;
-
 	else if (!strcasecmp(key, "sequential_threshold"))
 		pattern = PATTERN_SEQUENTIAL;
-
 	else
 		return -EINVAL;
 
@@ -1145,7 +1143,7 @@ static void init_policy_functions(struct mq_policy *mq)
 
 static struct dm_cache_policy *mq_create(dm_cblock_t cache_size,
 					 sector_t origin_size,
-					 sector_t block_size)
+					 sector_t cache_block_size)
 {
 	int r;
 	struct mq_policy *mq = kzalloc(sizeof(*mq), GFP_KERNEL);
@@ -1229,12 +1227,18 @@ static int __init mq_init(void)
 		goto bad;
 
 	r = dm_cache_policy_register(&mq_policy_type);
-	if (r)
+	if (r) {
+		DMERR("register failed %d", r);
 		goto bad_register_mq;
+	}
 
 	r = dm_cache_policy_register(&default_policy_type);
-	if (!r)
+	if (!r) {
+		DMINFO("version " MQ_VERSION " loaded");
 		return 0;
+	}
+
+	DMERR("register failed (as default) %d", r);
 
 	dm_cache_policy_unregister(&mq_policy_type);
 bad_register_mq:
@@ -1247,6 +1251,7 @@ static void __exit mq_exit(void)
 {
 	dm_cache_policy_unregister(&mq_policy_type);
 	dm_cache_policy_unregister(&default_policy_type);
+
 	kmem_cache_destroy(mq_entry_cache);
 }
 
