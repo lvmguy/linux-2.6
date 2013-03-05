@@ -177,6 +177,9 @@ static int background_set_config_value(struct dm_cache_policy *pe,
 		return 0;
 
 	} else if (!strcasecmp(key, "policy")) {
+		if (p->real_policy)
+			return -EPERM;
+
 		p->real_policy = dm_cache_policy_create(value, p->cache_blocks,
 							p->origin_sectors, p->block_sectors);
 		if (p->real_policy) {
