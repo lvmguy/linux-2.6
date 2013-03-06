@@ -508,11 +508,14 @@ static void push(struct mq_policy *mq, struct entry *e)
 	hash_insert(mq, e);
 
 	if (e->in_cache) {
-		if (!list_empty(&e->dirty))
-			list_move_tail(&e->dirty, &mq->dirty);
-
 		alloc_cblock(mq, e->cblock);
 		queue_push(&mq->cache, queue_level(e), &e->list);
+
+		if (list_empty(&e->dirty))
+			list_add_tail(&e->dirty, &mq->dirty);
+		else
+			list_move_tail(&e->dirty, &mq->dirty);
+
 	} else {
 		if (!list_empty(&e->dirty))
 			list_del_init(&e->dirty);
@@ -529,8 +532,12 @@ static void del(struct mq_policy *mq, struct entry *e)
 {
 	queue_remove(&e->list);
 	hash_remove(e);
-	if (e->in_cache)
+	if (e->in_cache) {
+		if (!list_empty(&e->dirty))
+			list_del_init(&e->dirty);
+
 		free_cblock(mq, e->cblock);
+	}
 }
 
 /*
