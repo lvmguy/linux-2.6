@@ -1743,6 +1743,8 @@ static int set_config_values(struct dm_cache_policy *p, int argc, const char **a
 static int create_cache_policy(struct cache *cache, struct cache_args *ca,
 			       char **error)
 {
+	int r;
+
 	cache->policy =	dm_cache_policy_create(ca->policy_name,
 					       cache->cache_size,
 					       cache->origin_sectors,
@@ -1752,7 +1754,13 @@ static int create_cache_policy(struct cache *cache, struct cache_args *ca,
 		return -ENOMEM;
 	}
 
-	return set_config_values(cache->policy, ca->policy_argc, ca->policy_argv);
+	r = set_config_values(cache->policy, ca->policy_argc, ca->policy_argv);
+	if (r) {
+		dm_cache_policy_destroy(cache->policy);
+		cache->policy = NULL;
+	}
+
+	return r;
 }
 
 /*

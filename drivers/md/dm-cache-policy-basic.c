@@ -108,10 +108,16 @@ static void iot_update_stats(struct io_tracker *t, struct bio *bio)
 static void iot_check_for_pattern_switch(struct io_tracker *t,
 					 sector_t block_size)
 {
-	bool reset = iot_sequential_pattern(t) ? (t->nr_rand_samples >= t->thresholds[PATTERN_RANDOM]) :
-						 (t->nr_seq_sectors >= t->thresholds[PATTERN_SEQUENTIAL] * block_size);
-	if (reset)
+	if (iot_sequential_pattern(t)) {
+		if (t->nr_rand_samples >= t->thresholds[PATTERN_RANDOM]) {
+			t->pattern = PATTERN_RANDOM;
+			t->nr_seq_sectors = t->nr_rand_samples = 0;
+		}
+
+	} else if (t->nr_seq_sectors >= t->thresholds[PATTERN_SEQUENTIAL] * block_size) {
+		t->pattern = PATTERN_SEQUENTIAL;
 		t->nr_seq_sectors = t->nr_rand_samples = 0;
+	}
 }
 
 /*----------------------------------------------------------------------------*/
