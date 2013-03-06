@@ -1233,13 +1233,13 @@ static void writeback_some_dirty_blocks(struct cache *cache)
 		r = policy_writeback_work(cache->policy, &oblock, &cblock);
 		if (r)
 			break;
-
 		r = get_cell(cache, oblock, &structs, &old_ocell);
 		if (r) {
 			policy_set_dirty(cache->policy, oblock);
 			break;
 		}
 
+pr_alert("%s writeback work\n", __func__);
 		writeback(cache, &structs, oblock, cblock, old_ocell);
 	}
 

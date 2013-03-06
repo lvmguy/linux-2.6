@@ -511,9 +511,7 @@ static void push(struct mq_policy *mq, struct entry *e)
 		alloc_cblock(mq, e->cblock);
 		queue_push(&mq->cache, queue_level(e), &e->list);
 
-		if (list_empty(&e->dirty))
-			list_add_tail(&e->dirty, &mq->dirty);
-		else
+		if (!list_empty(&e->dirty))
 			list_move_tail(&e->dirty, &mq->dirty);
 
 	} else {
