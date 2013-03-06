@@ -1239,7 +1239,6 @@ static void writeback_some_dirty_blocks(struct cache *cache)
 			break;
 		}
 
-pr_alert("%s writeback work\n", __func__);
 		writeback(cache, &structs, oblock, cblock, old_ocell);
 	}
 
