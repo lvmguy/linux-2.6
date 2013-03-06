@@ -149,7 +149,7 @@ static void background_tick(struct dm_cache_policy *pe)
 	policy_tick(to_policy(pe)->real_policy);
 }
 
-static const char *clean_block_str = "g_pool_size";
+static const char *clean_block_str = "clean_block_pool_size";
 static const char *policy_str = "policy";
 
 static int background_emit_config_values(struct dm_cache_policy *pe, char *result, unsigned maxlen)
