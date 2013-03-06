@@ -52,7 +52,7 @@
  * as follows and can be adjusted via the targets constructor and message interfaces.
  */
 #define RANDOM_THRESHOLD_DEFAULT 4
-#define SEQUENTIAL_THRESHOLD_DEFAULT 512
+#define SEQUENTIAL_THRESHOLD_DEFAULT 4 /* Cache blocks */
 
 static struct kmem_cache *basic_entry_cache;
 static struct kmem_cache *track_entry_cache;

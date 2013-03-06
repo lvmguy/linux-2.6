@@ -19,10 +19,13 @@
 
 struct policy {
 	struct dm_cache_policy policy;
-
 	struct dm_cache_policy *real_policy;
-	dm_cblock_t cache_blocks, threshold;
-	sector_t origin_sectors, block_sectors;
+
+	dm_cblock_t threshold;
+
+	dm_cblock_t cache_blocks;
+	sector_t origin_sectors;
+	sector_t block_sectors;
 };
 
 /*----------------------------------------------------------------------------*/
@@ -146,16 +149,19 @@ static void background_tick(struct dm_cache_policy *pe)
 	policy_tick(to_policy(pe)->real_policy);
 }
 
+static const char *clean_block_str = "g_pool_size";
+static const char *policy_str = "policy";
+
 static int background_emit_config_values(struct dm_cache_policy *pe, char *result, unsigned maxlen)
 {
 	ssize_t sz = 0;
 	struct policy *p = to_policy(pe);
 
-	DMEMIT("4 clean_block_pool_size %u policy %s ",
-	       p->threshold,
-	       dm_cache_policy_get_name(p->real_policy));
+	DMEMIT("4 %s %u %s %s ",
+	       clean_block_str,  p->threshold,
+	       policy_str, dm_cache_policy_get_name(p->real_policy));
 
-	return (sz < maxlen) ? policy_emit_config_values(to_policy(pe)->real_policy, result + sz, maxlen - sz) : 0;
+	return sz < maxlen ? policy_emit_config_values(to_policy(pe)->real_policy, result + sz, maxlen - sz) : 0;
 }
 
 static void init_policy_functions(struct policy *p, bool create);
@@ -165,7 +171,7 @@ static int background_set_config_value(struct dm_cache_policy *pe,
 {
 	struct policy *p = to_policy(pe);
 
-	if (!strcasecmp(key, "clean_block_pool_size")) {
+	if (!strcasecmp(key, clean_block_str)) {
 		unsigned long tmp;
 
 		if (kstrtoul(value, 10, &tmp) ||
@@ -174,23 +180,21 @@ static int background_set_config_value(struct dm_cache_policy *pe,
 
 		p->threshold = to_cblock(tmp);
 
-		return 0;
-
-	} else if (!strcasecmp(key, "policy")) {
+	} else if (!strcasecmp(key, policy_str)) {
 		if (p->real_policy)
 			return -EPERM;
 
 		p->real_policy = dm_cache_policy_create(value, p->cache_blocks,
 							p->origin_sectors, p->block_sectors);
-		if (p->real_policy) {
-			init_policy_functions(p, false);
-			return 0;
-		}
+		if (!p->real_policy)
+			return -ENOMEM;
 
-		return -ENOMEM;
-	}
+		init_policy_functions(p, false);
 
-	return p->real_policy ? policy_set_config_value(p->real_policy, key, value) : -EINVAL;
+	} else
+		return p->real_policy ? policy_set_config_value(p->real_policy, key, value) : -EINVAL;
+
+	return 0;
 }
 
 /* Init the policy plugin interface function pointers. */
@@ -228,11 +232,12 @@ static struct dm_cache_policy *background_create(dm_cblock_t cache_blocks,
 		return NULL;
 
 	init_policy_functions(p, true);
-
+	p->threshold = 0;
 	p->cache_blocks = cache_blocks;
+
+	/* Save for set_config_value() stacked policy creation. */
 	p->origin_sectors = origin_sectors;
 	p->block_sectors = block_sectors;
-	p->threshold = 0;
 
 	return &p->policy;
 }
