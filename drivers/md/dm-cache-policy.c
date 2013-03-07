@@ -33,7 +33,6 @@ static struct dm_cache_policy_type *__get_policy_once(const char *name)
 	struct dm_cache_policy_type *t = __find_policy(name);
 
 	if (t && !try_module_get(t->owner)) {
-		t = NULL;
 		DMWARN("couldn't get module %s", name);
 		t = ERR_PTR(-EINVAL);
 	}
@@ -82,8 +81,8 @@ int dm_cache_policy_register(struct dm_cache_policy_type *type)
 	int r;
 
 	/* One size fits all for now */
-	if (type->hint_size != 0 && type->hint_size != 4) {
-		DMWARN("hint size must be 0 or 4 but %llu supplied.", (unsigned long long) type->hint_size);
+	if (type->hint_size > 64) {
+		DMWARN("hint size must be <= 64 but %llu supplied.", (unsigned long long) type->hint_size);
 		return -EINVAL;
 	}
 

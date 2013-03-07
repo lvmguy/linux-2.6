@@ -14,6 +14,7 @@
 #include <linux/slab.h>
 
 #define DM_MSG_PREFIX "cache-policy-mq"
+#define MQ_VERSION	"1.0.0"
 
 static struct kmem_cache *mq_entry_cache;
 
@@ -924,7 +925,7 @@ static int mq_lookup(struct dm_cache_policy *p, dm_oblock_t oblock, dm_cblock_t 
 
 static int mq_load_mapping(struct dm_cache_policy *p,
 			   dm_oblock_t oblock, dm_cblock_t cblock,
-			   uint32_t hint, bool hint_valid)
+			   void *hint, bool hint_valid)
 {
 	struct mq_policy *mq = to_mq_policy(p);
 	struct entry *e;
@@ -936,7 +937,7 @@ static int mq_load_mapping(struct dm_cache_policy *p,
 	e->cblock = cblock;
 	e->oblock = oblock;
 	e->in_cache = true;
-	e->hit_count = hint_valid ? hint : 1;
+	e->hit_count = hint_valid ? le32_to_cpu(*((uint32_t *) hint)) : 1;
 	e->generation = mq->generation;
 	push(mq, e);
 
@@ -954,7 +955,9 @@ static int mq_walk_mappings(struct dm_cache_policy *p, policy_walk_fn fn,
 	mutex_lock(&mq->lock);
 	for (level = 0; level < NR_QUEUE_LEVELS; level++)
 		list_for_each_entry(e, &mq->cache.qs[level], list) {
-			r = fn(context, e->cblock, e->oblock, e->hit_count);
+			uint32_t value = cpu_to_le32(e->hit_count);
+
+			r = fn(context, e->cblock, e->oblock, &value);
 			if (r)
 				goto out;
 		}
@@ -1160,12 +1163,18 @@ static int __init mq_init(void)
 		goto bad;
 
 	r = dm_cache_policy_register(&mq_policy_type);
-	if (r)
+	if (r) {
+		DMERR("register failed %d", r);
 		goto bad_register_mq;
+	}
 
 	r = dm_cache_policy_register(&default_policy_type);
-	if (!r)
+	if (!r) {
+		DMINFO("version " MQ_VERSION " loaded");
 		return 0;
+	}
+
+	DMERR("register failed (as default) %d", r);
 
 	dm_cache_policy_unregister(&mq_policy_type);
 bad_register_mq:
@@ -1178,6 +1187,7 @@ static void __exit mq_exit(void)
 {
 	dm_cache_policy_unregister(&mq_policy_type);
 	dm_cache_policy_unregister(&default_policy_type);
+
 	kmem_cache_destroy(mq_entry_cache);
 }
 

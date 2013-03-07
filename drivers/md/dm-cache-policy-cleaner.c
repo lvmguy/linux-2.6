@@ -23,7 +23,6 @@ struct wb_cache_entry {
 	dm_oblock_t oblock;
 	dm_cblock_t cblock;
 	bool dirty:1;
-	bool pending:1;
 };
 
 struct hash {
@@ -216,13 +215,15 @@ static int wb_lookup(struct dm_cache_policy *pe, dm_oblock_t oblock, dm_cblock_t
 	return r;
 }
 
-static void __set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bool set)
+static int __set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bool set)
 {
+	int r;
 	struct policy *p = to_policy(pe);
 	struct wb_cache_entry *e;
 
 	e = lookup_cache_entry(p, oblock);
 	BUG_ON(!e);
+	r = e->dirty ? 1 : 0;
 
 	if (set) {
 		if (!e->dirty) {
@@ -232,31 +233,38 @@ static void __set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bo
 
 	} else {
 		if (e->dirty) {
-			e->pending = false;
 			e->dirty = false;
 			list_move(&e->list, &p->clean);
 		}
 	}
+
+	return r;
 }
 
-static void wb_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
+static int wb_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
 {
+	int r;
 	struct policy *p = to_policy(pe);
 	unsigned long flags;
 
 	spin_lock_irqsave(&p->lock, flags);
-	__set_clear_dirty(pe, oblock, true);
+	r = __set_clear_dirty(pe, oblock, true);
 	spin_unlock_irqrestore(&p->lock, flags);
+
+	return r;
 }
 
-static void wb_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
+static int wb_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
 {
+	int r;
 	struct policy *p = to_policy(pe);
 	unsigned long flags;
 
 	spin_lock_irqsave(&p->lock, flags);
-	__set_clear_dirty(pe, oblock, false);
+	r = __set_clear_dirty(pe, oblock, false);
 	spin_unlock_irqrestore(&p->lock, flags);
+
+	return r;
 }
 
 static void add_cache_entry(struct policy *p, struct wb_cache_entry *e)
@@ -270,7 +278,7 @@ static void add_cache_entry(struct policy *p, struct wb_cache_entry *e)
 
 static int wb_load_mapping(struct dm_cache_policy *pe,
 			   dm_oblock_t oblock, dm_cblock_t cblock,
-			   uint32_t hint, bool hint_valid)
+			   void *hint, bool hint_valid)
 {
 	int r;
 	struct policy *p = to_policy(pe);
@@ -392,6 +400,7 @@ static void init_policy_functions(struct policy *p)
 	p->policy.walk_mappings = NULL;
 	p->policy.remove_mapping = wb_remove_mapping;
 	p->policy.writeback_work = wb_writeback_work;
+	p->policy.next_dirty_block = NULL;
 	p->policy.force_mapping = wb_force_mapping;
 	p->policy.residency = wb_residency;
 	p->policy.tick = NULL;
