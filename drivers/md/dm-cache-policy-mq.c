@@ -501,6 +501,7 @@ static unsigned queue_level(struct entry *e)
  * Inserts the entry into the pre_cache or the cache.  Ensures the cache
  * block is marked as allocated if necc.  Inserts into the hash table.  Sets the
  * tick which records when the entry was last moved about.
+ * Updates/removes entry on/from dirty list
  */
 static void push(struct mq_policy *mq, struct entry *e)
 {
