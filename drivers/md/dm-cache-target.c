@@ -1806,8 +1806,10 @@ static int create_cache_policy(struct cache *cache, struct cache_args *ca,
 	}
 
 	r = set_config_values(cache->policy, ca->policy_argc, ca->policy_argv);
-	if (r)
+	if (r) {
 		dm_cache_policy_destroy(cache->policy);
+		cache->policy = NULL;
+	}
 
 	return r;
 }
@@ -2044,6 +2046,8 @@ static int cache_ctr(struct dm_target *ti, unsigned argc, char **argv)
 		goto out;
 
 	r = cache_create(ca, &cache);
+	if (r)
+		goto out;
 
 	r = copy_ctr_args(cache, argc - 3, (const char **) argv + 3);
 	if (r) {
