@@ -12,12 +12,8 @@
 #include <linux/hash.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/vmalloc.h>
 
 /*----------------------------------------------------------------*/
-
-#define DM_MSG_PREFIX "cache cleaner"
-#define CLEANER_VERSION "1.0.0"
 
 /* Cache entry struct. */
 struct wb_cache_entry {
@@ -27,7 +23,6 @@ struct wb_cache_entry {
 	dm_oblock_t oblock;
 	dm_cblock_t cblock;
 	bool dirty:1;
-	bool pending:1;
 };
 
 struct hash {
@@ -72,9 +67,7 @@ static struct policy *to_policy(struct dm_cache_policy *p)
 static struct list_head *list_pop(struct list_head *q)
 {
 	struct list_head *r = q->next;
-
 	list_del(r);
-
 	return r;
 }
 
@@ -222,13 +215,15 @@ static int wb_lookup(struct dm_cache_policy *pe, dm_oblock_t oblock, dm_cblock_t
 	return r;
 }
 
-static void __set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bool set)
+static int __set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bool set)
 {
+	int r;
 	struct policy *p = to_policy(pe);
 	struct wb_cache_entry *e;
 
 	e = lookup_cache_entry(p, oblock);
 	BUG_ON(!e);
+	r = e->dirty ? 1 : 0;
 
 	if (set) {
 		if (!e->dirty) {
@@ -238,31 +233,38 @@ static void __set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bo
 
 	} else {
 		if (e->dirty) {
-			e->pending = false;
 			e->dirty = false;
 			list_move(&e->list, &p->clean);
 		}
 	}
+
+	return r;
 }
 
-static void wb_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
+static int wb_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
 {
+	int r;
 	struct policy *p = to_policy(pe);
 	unsigned long flags;
 
 	spin_lock_irqsave(&p->lock, flags);
-	__set_clear_dirty(pe, oblock, true);
+	r = __set_clear_dirty(pe, oblock, true);
 	spin_unlock_irqrestore(&p->lock, flags);
+
+	return r;
 }
 
-static void wb_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
+static int wb_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
 {
+	int r;
 	struct policy *p = to_policy(pe);
 	unsigned long flags;
 
 	spin_lock_irqsave(&p->lock, flags);
-	__set_clear_dirty(pe, oblock, false);
+	r = __set_clear_dirty(pe, oblock, false);
 	spin_unlock_irqrestore(&p->lock, flags);
+
+	return r;
 }
 
 static void add_cache_entry(struct policy *p, struct wb_cache_entry *e)
@@ -398,6 +400,7 @@ static void init_policy_functions(struct policy *p)
 	p->policy.walk_mappings = NULL;
 	p->policy.remove_mapping = wb_remove_mapping;
 	p->policy.writeback_work = wb_writeback_work;
+	p->policy.next_dirty_block = NULL;
 	p->policy.force_mapping = wb_force_mapping;
 	p->policy.residency = wb_residency;
 	p->policy.tick = NULL;
@@ -405,7 +408,7 @@ static void init_policy_functions(struct policy *p)
 
 static struct dm_cache_policy *wb_create(dm_cblock_t cache_size,
 					 sector_t origin_size,
-					 sector_t cache_block_size)
+					 sector_t block_size)
 {
 	int r;
 	struct policy *p = kzalloc(sizeof(*p), GFP_KERNEL);
@@ -442,14 +445,7 @@ static struct dm_cache_policy_type wb_policy_type = {
 
 static int __init wb_init(void)
 {
-	int r = dm_cache_policy_register(&wb_policy_type);
-
-	if (r < 0)
-		DMERR("register failed %d", r);
-	else
-		DMINFO("version " CLEANER_VERSION " loaded");
-
-	return r;
+	return dm_cache_policy_register(&wb_policy_type);
 }
 
 static void __exit wb_exit(void)
