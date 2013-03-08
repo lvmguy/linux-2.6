@@ -910,7 +910,7 @@ static int __load_mapping(void *context, uint64_t cblock, void *leaf)
 	unpack_value(value, &oblock, &flags);
 
 	if (flags & M_VALID) {
-		__le64 value[4];	/* FIXME: */
+		__le64 value[4];
 		void *hint_value = &value;
 
 		if (thunk->hints_valid) {
@@ -1106,7 +1106,7 @@ static int begin_hints(struct dm_cache_metadata *cmd, struct dm_cache_policy *po
 		return -EINVAL;
 
 	if (!policy_unchanged(cmd, policy)) {
-		__le64 value[4];	/* FIXME: */
+		__le64 value[4];
 		void *hint_value = &value;
 
 		size_t hint_size;
