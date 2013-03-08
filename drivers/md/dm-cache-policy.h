@@ -211,8 +211,9 @@ struct dm_cache_policy_type {
 
 	/*
 	 * Policies may store a hint for each each cache block.
-	 * Currently the size of this hint must be 0 or 4 bytes but we
-	 * expect to relax this in future.
+	 * Hints are restricted to 32 bytes for now.
+	 * Policy modules have to cover any endianness coversions
+	 * of hints and bless them for disk.
 	 */
 	size_t hint_size;
 

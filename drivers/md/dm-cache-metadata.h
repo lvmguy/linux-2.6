@@ -134,6 +134,9 @@ int dm_cache_begin_hints(struct dm_cache_metadata *cmd, struct dm_cache_policy *
 
 /*
  * requests hints for every cblock and stores in the metadata device.
+ * hint is limited to 32 bytes for now, policy modules have to
+ * care about any endianness conversions needed and to bless the
+ * hints for disk.
  */
 int dm_cache_save_hint(struct dm_cache_metadata *cmd,
 		       dm_cblock_t cblock, void *hint);
