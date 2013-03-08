@@ -79,7 +79,7 @@ struct policy_result {
 };
 
 typedef int (*policy_walk_fn)(void *context, dm_cblock_t cblock,
-			      dm_oblock_t oblock, uint32_t hint);
+			      dm_oblock_t oblock, void *hint);
 
 /*
  * The cache policy object.  Just a bunch of methods.  It is envisaged that
@@ -146,7 +146,7 @@ struct dm_cache_policy {
 	 * mapping from the metadata device into the policy.
 	 */
 	int (*load_mapping)(struct dm_cache_policy *p, dm_oblock_t oblock,
-			    dm_cblock_t cblock, uint32_t hint, bool hint_valid);
+			    dm_cblock_t cblock, void *hint, bool hint_valid);
 
 	int (*walk_mappings)(struct dm_cache_policy *p, policy_walk_fn fn,
 			     void *context);

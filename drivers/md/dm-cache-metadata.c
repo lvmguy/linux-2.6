@@ -901,7 +901,6 @@ static int __load_mapping(void *context, uint64_t cblock, void *leaf)
 	int r = 0;
 	bool dirty;
 	__le64 value;
-	__le32 hint_value = 0;
 	dm_oblock_t oblock;
 	unsigned flags;
 	struct thunk *thunk = context;
@@ -911,16 +910,19 @@ static int __load_mapping(void *context, uint64_t cblock, void *leaf)
 	unpack_value(value, &oblock, &flags);
 
 	if (flags & M_VALID) {
+		__le64 value[4];	/* FIXME: */
+		void *hint_value = &value;
+
 		if (thunk->hints_valid) {
 			r = dm_array_get_value(&cmd->hint_info, cmd->hint_root,
-					       cblock, &hint_value);
+					       cblock, hint_value);
 			if (r && r != -ENODATA)
 				return r;
 		}
 
 		dirty = thunk->respect_dirty_flags ? (flags & M_DIRTY) : true;
 		r = thunk->fn(thunk->context, oblock, to_cblock(cblock),
-			      dirty, le32_to_cpu(hint_value), thunk->hints_valid);
+			      dirty, hint_value, thunk->hints_valid);
 	}
 
 	return r;
@@ -1096,8 +1098,6 @@ int dm_cache_get_metadata_dev_size(struct dm_cache_metadata *cmd,
 static int begin_hints(struct dm_cache_metadata *cmd, struct dm_cache_policy *policy)
 {
 	int r;
-	__le32 value;
-	size_t hint_size;
 	const char *policy_name = dm_cache_policy_get_name(policy);
 	const unsigned *policy_version = dm_cache_policy_get_version(policy);
 
@@ -1106,6 +1106,10 @@ static int begin_hints(struct dm_cache_metadata *cmd, struct dm_cache_policy *po
 		return -EINVAL;
 
 	if (!policy_unchanged(cmd, policy)) {
+		__le64 value[4];	/* FIXME: */
+		void *hint_value = &value;
+
+		size_t hint_size;
 		strncpy(cmd->policy_name, policy_name, sizeof(cmd->policy_name));
 		memcpy(cmd->policy_version, policy_version, sizeof(cmd->policy_version));
 
@@ -1124,11 +1128,11 @@ static int begin_hints(struct dm_cache_metadata *cmd, struct dm_cache_policy *po
 		if (r)
 			return r;
 
-		value = cpu_to_le32(0);
+		memset(value, 0, sizeof(value));
 		__dm_bless_for_disk(&value);
 		r = dm_array_resize(&cmd->hint_info, cmd->hint_root, 0,
 				    from_cblock(cmd->cache_blocks),
-				    &value, &cmd->hint_root);
+				    hint_value, &cmd->hint_root);
 		if (r)
 			return r;
 	}
@@ -1147,22 +1151,18 @@ int dm_cache_begin_hints(struct dm_cache_metadata *cmd, struct dm_cache_policy *
 	return r;
 }
 
-static int save_hint(struct dm_cache_metadata *cmd, dm_cblock_t cblock,
-		     uint32_t hint)
+static int save_hint(struct dm_cache_metadata *cmd, dm_cblock_t cblock, void *hint)
 {
 	int r;
-	__le32 value = cpu_to_le32(hint);
-	__dm_bless_for_disk(&value);
 
 	r = dm_array_set_value(&cmd->hint_info, cmd->hint_root,
-			       from_cblock(cblock), &value, &cmd->hint_root);
+			       from_cblock(cblock), hint, &cmd->hint_root);
 	cmd->changed = true;
 
 	return r;
 }
 
-int dm_cache_save_hint(struct dm_cache_metadata *cmd, dm_cblock_t cblock,
-		       uint32_t hint)
+int dm_cache_save_hint(struct dm_cache_metadata *cmd, dm_cblock_t cblock, void *hint)
 {
 	int r;
 
