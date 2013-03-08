@@ -81,7 +81,7 @@ int dm_cache_policy_register(struct dm_cache_policy_type *type)
 	int r;
 
 	/* One size fits all for now */
-	if (type->hint_size > 64) {
+	if (type->hint_size > 32) {
 		DMWARN("hint size must be <= 64 but %llu supplied.", (unsigned long long) type->hint_size);
 		return -EINVAL;
 	}
