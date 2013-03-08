@@ -138,8 +138,8 @@ struct dm_cache_policy {
 	/*
 	 * oblock must be a mapped block.  Must not block.
 	 */
-	void (*set_dirty)(struct dm_cache_policy *p, dm_oblock_t oblock);
-	void (*clear_dirty)(struct dm_cache_policy *p, dm_oblock_t oblock);
+	int (*set_dirty)(struct dm_cache_policy *p, dm_oblock_t oblock);
+	int (*clear_dirty)(struct dm_cache_policy *p, dm_oblock_t oblock);
 
 	/*
 	 * Called when a cache target is first created.  Used to load a
@@ -159,7 +159,14 @@ struct dm_cache_policy {
 	void (*force_mapping)(struct dm_cache_policy *p, dm_oblock_t current_oblock,
 			      dm_oblock_t new_oblock);
 
+	/*
+	 * writeback_work supporting the cache target to retrieve any dirty blocks to write back.
+	 *
+	 * next_dirty_block providing any next dirty block to the background policy for writeback,
+	 * thus allowing quicker eviction by evoiding demotion on cache block replacement.
+	 */
 	int (*writeback_work)(struct dm_cache_policy *p, dm_oblock_t *oblock, dm_cblock_t *cblock);
+	int (*next_dirty_block)(struct dm_cache_policy *p, dm_oblock_t *oblock, dm_cblock_t *cblock);
 
 
 	/*
@@ -228,4 +235,4 @@ void dm_cache_policy_unregister(struct dm_cache_policy_type *type);
 
 /*----------------------------------------------------------------*/
 
-#endif	/* DM_CACHE_POLICY_H */
+#endif /* DM_CACHE_POLICY_H */

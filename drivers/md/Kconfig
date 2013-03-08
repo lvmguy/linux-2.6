@@ -299,6 +299,15 @@ config DM_CACHE_CLEANER
          A simple cache policy that writes back all data to the
          origin.  Used when decommissioning a dm-cache.
 
+config DM_CACHE_BACKGROUND
+       tristate "Stackable Background Write Dirty Blocks Cache Policy (EXPERIMENTAL)"
+       depends on DM_CACHE
+       default y
+       ---help---
+         A stackable cache policy to put on top of eg. 'mq' allowing for
+         a configurable amount of dirty pages to be flsuhed in the background,
+         thus preventing cache block flushs on eviction to gain performance.
+
 config DM_MIRROR
        tristate "Mirror target"
        depends on BLK_DEV_DM
