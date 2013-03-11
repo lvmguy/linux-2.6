@@ -149,6 +149,7 @@ struct cache {
 	struct list_head need_commit_migrations;
 	sector_t migration_threshold;
 	atomic_t nr_migrations;
+	atomic_t sectors_in_flight;
 	wait_queue_head_t migration_wait;
 
 	/*
@@ -609,6 +610,7 @@ static void issue(struct cache *cache, struct bio *bio)
 	unsigned long flags;
 
 	if (!bio_triggers_commit(cache, bio)) {
+		atomic_add(bio_sectors(bio), &cache->sectors_in_flight);
 		generic_make_request(bio);
 		return;
 	}
@@ -1080,9 +1082,15 @@ static void process_discard_bio(struct cache *cache, struct bio *bio)
 
 static bool spare_migration_bandwidth(struct cache *cache)
 {
-	sector_t current_volume = (atomic_read(&cache->nr_migrations) + 1) *
-		cache->sectors_per_block;
-	return current_volume < cache->migration_threshold;
+	sector_t application_volume = atomic_read(&cache->sectors_in_flight);
+	sector_t migration_volume;
+
+	if (!application_volume)
+		return true;
+
+	migration_volume = (atomic_read(&cache->nr_migrations) + 1) * cache->sectors_per_block;
+
+	return 100 * migration_volume <= cache->migration_threshold * application_volume;
 }
 
 static bool is_writethrough_io(struct cache *cache, struct bio *bio,
@@ -1868,6 +1876,8 @@ static sector_t calculate_discard_block_size(sector_t cache_block_size,
 	return discard_block_size;
 }
 
+#define DEFAULT_MIGRATION_THRESHOLD	25 /* percent */
+
 static int cache_create(struct cache_args *ca, struct cache **result)
 {
 	int r = 0;
@@ -1947,8 +1957,9 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	INIT_LIST_HEAD(&cache->quiesced_migrations);
 	INIT_LIST_HEAD(&cache->completed_migrations);
 	INIT_LIST_HEAD(&cache->need_commit_migrations);
-	cache->migration_threshold = ca->block_size * 2;
+	cache->migration_threshold = DEFAULT_MIGRATION_THRESHOLD;
 	atomic_set(&cache->nr_migrations, 0);
+	atomic_set(&cache->sectors_in_flight, 0);
 	init_waitqueue_head(&cache->migration_wait);
 
 	cache->nr_dirty = 0;
@@ -2197,6 +2208,9 @@ static int cache_end_io(struct dm_target *ti, struct bio *bio, int error)
 	struct cache *cache = ti->private;
 	unsigned long flags;
 	struct per_bio_data *pb = get_per_bio_data(bio);
+
+	BUG_ON(atomic_read(&cache->sectors_in_flight) < bio_sectors(bio));
+	atomic_sub(bio_sectors(bio), &cache->sectors_in_flight);
 
 	if (pb->tick) {
 		policy_tick(cache->policy);
@@ -2502,7 +2516,7 @@ static int process_config_option(struct cache *cache, char **argv)
 	unsigned long tmp;
 
 	if (!strcasecmp(argv[0], "migration_threshold")) {
-		if (kstrtoul(argv[1], 10, &tmp))
+		if (kstrtoul(argv[1], 10, &tmp) || tmp > 100)
 			return -EINVAL;
 
 		cache->migration_threshold = tmp;
