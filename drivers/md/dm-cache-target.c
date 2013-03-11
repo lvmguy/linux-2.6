@@ -605,13 +605,18 @@ static int bio_triggers_commit(struct cache *cache, struct bio *bio)
 	return bio->bi_rw & (REQ_FLUSH | REQ_FUA);
 }
 
+static void account_and_make_request(struct cache *cache, struct bio *bio)
+{
+	atomic_add(bio_sectors(bio), &cache->sectors_in_flight);
+	generic_make_request(bio);
+}
+
 static void issue(struct cache *cache, struct bio *bio)
 {
 	unsigned long flags;
 
 	if (!bio_triggers_commit(cache, bio)) {
-		atomic_add(bio_sectors(bio), &cache->sectors_in_flight);
-		generic_make_request(bio);
+		account_and_make_request(cache, bio);
 		return;
 	}
 
@@ -1276,7 +1281,7 @@ static void process_deferred_flush_bios(struct cache *cache, bool submit_bios)
 	spin_unlock_irqrestore(&cache->lock, flags);
 
 	while ((bio = bio_list_pop(&bios)))
-		submit_bios ? generic_make_request(bio) : bio_io_error(bio);
+		submit_bios ? account_and_make_request(cache, bio) : bio_io_error(bio);
 }
 
 static void process_deferred_writethrough_bios(struct cache *cache)
@@ -1293,7 +1298,7 @@ static void process_deferred_writethrough_bios(struct cache *cache)
 	spin_unlock_irqrestore(&cache->lock, flags);
 
 	while ((bio = bio_list_pop(&bios)))
-		generic_make_request(bio);
+		account_and_make_request(cache, bio);
 }
 
 static void writeback_some_dirty_blocks(struct cache *cache)
