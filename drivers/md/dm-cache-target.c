@@ -82,6 +82,7 @@ enum cache_mode {
 struct cache_features {
 	enum cache_mode mode;
 	bool write_through:1;
+	bool avoid_promote:1;
 };
 
 struct cache_stats {
@@ -536,6 +537,12 @@ static struct per_bio_data *init_per_bio_data(struct bio *bio)
 /*----------------------------------------------------------------
  * Remapping
  *--------------------------------------------------------------*/
+
+static void account_sectors(struct cache *cache, struct bio *bio)
+{
+	atomic_add(bio_sectors(bio), &cache->sectors_in_flight);
+}
+
 static void remap_to_origin(struct cache *cache, struct bio *bio)
 {
 	bio->bi_bdev = cache->origin_dev->bdev;
@@ -547,6 +554,7 @@ static void remap_to_cache(struct cache *cache, struct bio *bio,
 	sector_t bi_sector = bio->bi_sector;
 
 	bio->bi_bdev = cache->cache_dev->bdev;
+
 	if (!block_size_is_power_of_two(cache))
 		bio->bi_sector = (from_cblock(cblock) * cache->sectors_per_block) +
 				sector_div(bi_sector, cache->sectors_per_block);
@@ -570,7 +578,7 @@ static void check_if_tick_bio_needed(struct cache *cache, struct bio *bio)
 }
 
 static void remap_to_origin_clear_discard(struct cache *cache, struct bio *bio,
-				  dm_oblock_t oblock)
+					  dm_oblock_t oblock)
 {
 	check_if_tick_bio_needed(cache, bio);
 	remap_to_origin(cache, bio);
@@ -600,23 +608,18 @@ static dm_oblock_t get_bio_block(struct cache *cache, struct bio *bio)
 	return to_oblock(block_nr);
 }
 
-static int bio_triggers_commit(struct cache *cache, struct bio *bio)
+static int bio_triggers_commit(struct bio *bio)
 {
 	return bio->bi_rw & (REQ_FLUSH | REQ_FUA);
-}
-
-static void account_and_make_request(struct cache *cache, struct bio *bio)
-{
-	atomic_add(bio_sectors(bio), &cache->sectors_in_flight);
-	generic_make_request(bio);
 }
 
 static void issue(struct cache *cache, struct bio *bio)
 {
 	unsigned long flags;
 
-	if (!bio_triggers_commit(cache, bio)) {
-		account_and_make_request(cache, bio);
+	if (!bio_triggers_commit(bio)) {
+		account_sectors(cache, bio);
+		generic_make_request(bio);
 		return;
 	}
 
@@ -644,22 +647,28 @@ static void defer_writethrough_bio(struct cache *cache, struct bio *bio)
 static void writethrough_endio(struct bio *bio, int err)
 {
 	struct per_bio_data *pb = get_per_bio_data(bio);
+	struct cache *cache = pb->cache;
+
 	bio->bi_end_io = pb->saved_bi_end_io;
 
+	BUG_ON(atomic_read(&cache->sectors_in_flight) < bio_sectors(bio));
+	atomic_sub(bio_sectors(bio), &cache->sectors_in_flight);
+
 	if (err) {
+		account_sectors(cache, bio);
 		bio_endio(bio, err);
 		return;
 	}
 
 	dm_bio_restore(&pb->bio_details, bio);
-	remap_to_cache(pb->cache, bio, pb->cblock);
+	remap_to_cache(cache, bio, pb->cblock);
 
 	/*
 	 * We can't issue this bio directly, since we're in interrupt
 	 * context.  So it get's put on a bio list for processing by the
 	 * worker thread.
 	 */
-	defer_writethrough_bio(pb->cache, bio);
+	defer_writethrough_bio(cache, bio);
 }
 
 /*
@@ -746,13 +755,13 @@ static void migration_failure(struct dm_cache_migration *mg)
 		DMWARN_LIMIT("demotion failed; couldn't copy block");
 		policy_force_mapping(cache->policy, mg->new_oblock, mg->old_oblock);
 
-		cell_defer(cache, mg->old_ocell, mg->promote ? 0 : 1);
+		cell_defer(cache, mg->old_ocell, !mg->promote);
 		if (mg->promote)
-			cell_defer(cache, mg->new_ocell, 1);
+			cell_defer(cache, mg->new_ocell, true);
 	} else {
 		DMWARN_LIMIT("promotion failed; couldn't copy block");
 		policy_remove_mapping(cache->policy, mg->new_oblock);
-		cell_defer(cache, mg->new_ocell, 1);
+		cell_defer(cache, mg->new_ocell, true);
 	}
 
 	cleanup_migration(mg);
@@ -804,7 +813,7 @@ static void migration_success_post_commit(struct dm_cache_migration *mg)
 		return;
 
 	} else if (mg->demote) {
-		cell_defer(cache, mg->old_ocell, mg->promote ? 0 : 1);
+		cell_defer(cache, mg->old_ocell, !mg->promote);
 
 		if (mg->promote) {
 			mg->demote = false;
@@ -964,6 +973,14 @@ static void quiesce_migration(struct dm_cache_migration *mg)
 		queue_quiesced_migration(mg);
 }
 
+static bool conditional_promote(struct cache *cache, struct bio *bio)
+{
+	if (cache->features.avoid_promote)
+		return (bio_data_dir(bio) == WRITE && bio_sectors(bio) == cache->sectors_per_block) ? false : true;
+	else
+		return true;
+}
+
 static void promote(struct cache *cache, struct prealloc *structs,
 		    dm_oblock_t oblock, dm_cblock_t cblock,
 		    struct dm_bio_prison_cell *cell, struct bio *bio)
@@ -973,7 +990,7 @@ static void promote(struct cache *cache, struct prealloc *structs,
 	mg->err = false;
 	mg->writeback = false;
 	mg->demote = false;
-	mg->promote = (bio_sectors(bio) == cache->sectors_per_block && bio_data_dir(bio) == WRITE) ? false : true;
+	mg->promote = conditional_promote(cache, bio);
 	mg->cache = cache;
 	mg->new_oblock = oblock;
 	mg->cblock = cblock;
@@ -1018,7 +1035,7 @@ static void demote_then_promote(struct cache *cache, struct prealloc *structs,
 	mg->err = false;
 	mg->writeback = false;
 	mg->demote = true;
-	mg->promote = (bio_sectors(bio) == cache->sectors_per_block && bio_data_dir(bio) == WRITE) ? false : true;
+	mg->promote = conditional_promote(cache, bio);
 	mg->cache = cache;
 	mg->old_oblock = old_oblock;
 	mg->new_oblock = new_oblock;
@@ -1082,6 +1099,7 @@ static void process_discard_bio(struct cache *cache, struct bio *bio)
 	for (b = start_block; b < end_block; b++)
 		set_discard(cache, to_dblock(b));
 
+	account_sectors(cache, bio);
 	bio_endio(bio, 0);
 }
 
@@ -1089,11 +1107,16 @@ static bool spare_migration_bandwidth(struct cache *cache)
 {
 	sector_t application_volume = atomic_read(&cache->sectors_in_flight);
 	sector_t migration_volume;
+	unsigned nr_migrations;
 
 	if (!application_volume)
 		return true;
 
-	migration_volume = (atomic_read(&cache->nr_migrations) + 1) * cache->sectors_per_block;
+	nr_migrations = atomic_read(&cache->nr_migrations);
+	if (!nr_migrations)
+		return true;
+
+	migration_volume = (nr_migrations + 1) * cache->sectors_per_block;
 
 	return 100 * migration_volume <= cache->migration_threshold * application_volume;
 }
@@ -1200,6 +1223,7 @@ static void process_bio(struct cache *cache, struct prealloc *structs,
 	default:
 		DMERR_LIMIT("%s: erroring bio, unknown policy op: %u", __func__,
 			    (unsigned) lookup_result.op);
+		account_sectors(cache, bio);
 		bio_io_error(bio);
 	}
 
@@ -1280,8 +1304,10 @@ static void process_deferred_flush_bios(struct cache *cache, bool submit_bios)
 	bio_list_init(&cache->deferred_flush_bios);
 	spin_unlock_irqrestore(&cache->lock, flags);
 
-	while ((bio = bio_list_pop(&bios)))
-		submit_bios ? account_and_make_request(cache, bio) : bio_io_error(bio);
+	while ((bio = bio_list_pop(&bios))) {
+		account_sectors(cache, bio);
+		submit_bios ? generic_make_request(bio) : bio_io_error(bio);
+	}
 }
 
 static void process_deferred_writethrough_bios(struct cache *cache)
@@ -1297,8 +1323,10 @@ static void process_deferred_writethrough_bios(struct cache *cache)
 	bio_list_init(&cache->deferred_writethrough_bios);
 	spin_unlock_irqrestore(&cache->lock, flags);
 
-	while ((bio = bio_list_pop(&bios)))
-		account_and_make_request(cache, bio);
+	while ((bio = bio_list_pop(&bios))) {
+		account_sectors(cache, bio);
+		generic_make_request(bio);
+	}
 }
 
 static void writeback_some_dirty_blocks(struct cache *cache)
@@ -1384,8 +1412,10 @@ static void requeue_deferred_io(struct cache *cache)
 	bio_list_merge(&bios, &cache->deferred_bios);
 	bio_list_init(&cache->deferred_bios);
 
-	while ((bio = bio_list_pop(&bios)))
+	while ((bio = bio_list_pop(&bios))) {
+		account_sectors(cache, bio);
 		bio_endio(bio, DM_ENDIO_REQUEUE);
+	}
 }
 
 static int more_work(struct cache *cache)
@@ -1702,13 +1732,14 @@ static void init_features(struct cache_features *cf)
 {
 	cf->mode = CM_WRITE;
 	cf->write_through = false;
+	cf->avoid_promote = true;
 }
 
 static int parse_features(struct cache_args *ca, struct dm_arg_set *as,
 			  char **error)
 {
 	static struct dm_arg _args[] = {
-		{0, 1, "Invalid number of cache feature arguments"},
+		{0, 2, "Invalid number of cache feature arguments"},
 	};
 
 	int r;
@@ -1730,6 +1761,12 @@ static int parse_features(struct cache_args *ca, struct dm_arg_set *as,
 
 		else if (!strcasecmp(arg, "writethrough"))
 			cf->write_through = true;
+
+		else if (!strcasecmp(arg, "promote"))
+			cf->avoid_promote = false;
+
+		else if (!strcasecmp(arg, "avoid_promote"))
+			cf->avoid_promote = true;
 
 		else {
 			*error = "Unrecognised cache feature requested";
@@ -2055,6 +2092,7 @@ static int copy_ctr_args(struct cache *cache, int argc, const char **argv)
 	copy = kcalloc(argc, sizeof(*copy), GFP_KERNEL);
 	if (!copy)
 		return -ENOMEM;
+
 	for (i = 0; i < argc; i++) {
 		copy[i] = kstrdup(argv[i], GFP_KERNEL);
 		if (!copy[i]) {
@@ -2124,6 +2162,7 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 		 * Just remap to the origin and carry on.
 		 */
 		remap_to_origin_clear_discard(cache, bio, block);
+		account_sectors(cache, bio);
 		return DM_MAPIO_REMAPPED;
 	}
 
@@ -2149,10 +2188,13 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 	if (r) {
 		if (r < 0)
 			defer_bio(cache, bio);
+		else
+			account_sectors(cache, bio);
 
 		return DM_MAPIO_SUBMITTED;
 	}
 
+	account_sectors(cache, bio);
 	discarded_block = is_discarded_oblock(cache, block);
 
 	r = policy_map(cache->policy, block, false, can_migrate, discarded_block,
@@ -2480,12 +2522,9 @@ static void cache_status(struct dm_target *ti, status_type_t type,
 		       (unsigned long long) from_cblock(residency),
 		       cache->nr_dirty);
 
-		if (cache->features.write_through)
-			DMEMIT("1 writethrough ");
-		else
-			DMEMIT("0 ");
-
-		DMEMIT("2 migration_threshold %llu ", (unsigned long long) cache->migration_threshold);
+		DMEMIT("4 %s ", cache->features.write_through ? "writethrough" : "writeback");
+		DMEMIT("%spromote ", cache->features.avoid_promote ? "avoid_" : "");
+		DMEMIT("migration_threshold %llu ", (unsigned long long) cache->migration_threshold);
 		if (sz < maxlen) {
 			r = policy_emit_config_values(cache->policy, result + sz, maxlen - sz);
 			if (r)
@@ -2495,17 +2534,12 @@ static void cache_status(struct dm_target *ti, status_type_t type,
 		break;
 
 	case STATUSTYPE_TABLE:
-		format_dev_t(buf, cache->metadata_dev->bdev->bd_dev);
-		DMEMIT("%s ", buf);
-		format_dev_t(buf, cache->cache_dev->bdev->bd_dev);
-		DMEMIT("%s ", buf);
-		format_dev_t(buf, cache->origin_dev->bdev->bd_dev);
-		DMEMIT("%s", buf);
+		DMEMIT("%s ", format_dev_t(buf, cache->metadata_dev->bdev->bd_dev));
+		DMEMIT("%s ", format_dev_t(buf, cache->cache_dev->bdev->bd_dev));
+		DMEMIT("%s",  format_dev_t(buf, cache->origin_dev->bdev->bd_dev));
 
-		for (i = 0; i < cache->nr_ctr_args - 1; i++)
+		for (i = 0; i < cache->nr_ctr_args; i++)
 			DMEMIT(" %s", cache->ctr_args[i]);
-		if (cache->nr_ctr_args)
-			DMEMIT(" %s", cache->ctr_args[cache->nr_ctr_args - 1]);
 	}
 
 	return;
@@ -2526,6 +2560,16 @@ static int process_config_option(struct cache *cache, char **argv)
 
 		cache->migration_threshold = tmp;
 		return 0;
+
+	} else if (!strcasecmp(argv[0], "avoid_promote")) {
+		if (!strcasecmp(argv[1], "true")) {
+			cache->features.avoid_promote = true;
+			return 0;
+
+		} else if (!strcasecmp(argv[1], "false")) {
+			cache->features.avoid_promote = false;
+			return 0;
+		}
 	}
 
 	return NOT_CORE_OPTION;
