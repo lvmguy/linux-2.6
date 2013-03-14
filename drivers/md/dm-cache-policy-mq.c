@@ -945,14 +945,16 @@ static int _set_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock, bool 
 	BUG_ON(!e);
 
 	if (e->in_cache) {
-		r = !list_empty(&e->dirty);
+		r = list_empty(&e->dirty);
 
 		if (dirty) {
-			if (!r)
+			if (r)
 				list_add_tail(&e->dirty, &mq->dirty);
 
-		} else if (r)
+		} else if (!r) {
 			list_del_init(&e->dirty);
+			r = !r;
+		}
 
 	} else
 		r = -ENOENT;
