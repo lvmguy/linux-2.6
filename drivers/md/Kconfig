@@ -308,6 +308,16 @@ config DM_CACHE_BACKGROUND
          a configurable amount of dirty pages to be flsuhed in the background,
          thus preventing cache block flushs on eviction to gain performance.
 
+config DM_CACHE_BASIC
+       tristate "Basic Cache Policies - a list of replacement policies (EXPERIMENTAL)"
+       depends on DM_CACHE
+       select BTREE
+       default n
+       ---help---
+         Under development
+         A cache replacement policy module providing
+         FIFO, FILO, LRU, MRU, LFU, MFU, LFU_WS, MFU_WS, MULTIQUEUE, MULTIQUEUE_WS, Q2, TWOQUEUE and RANDOM policies
+
 config DM_MIRROR
        tristate "Mirror target"
        depends on BLK_DEV_DM

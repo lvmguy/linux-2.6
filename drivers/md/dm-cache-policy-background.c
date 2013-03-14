@@ -174,7 +174,7 @@ static void background_tick(struct dm_cache_policy *pe)
 	policy_tick(to_policy(pe)->real_policy);
 }
 
-static const char *clean_block_str = "clean_block_pool_size";
+static const char *clean_pool_str = "clean_block_pool_size";
 static const char *policy_str = "policy";
 
 static int background_emit_config_values(struct dm_cache_policy *pe, char *result, unsigned maxlen)
@@ -183,7 +183,7 @@ static int background_emit_config_values(struct dm_cache_policy *pe, char *resul
 	struct policy *p = to_policy(pe);
 
 	DMEMIT("4 %s %u %s %s ",
-	       clean_block_str,  p->threshold,
+	       clean_pool_str,  p->threshold,
 	       policy_str, dm_cache_policy_get_name(p->real_policy));
 
 	return sz < maxlen ? policy_emit_config_values(to_policy(pe)->real_policy, result + sz, maxlen - sz) : 0;
@@ -196,7 +196,7 @@ static int background_set_config_value(struct dm_cache_policy *pe,
 {
 	struct policy *p = to_policy(pe);
 
-	if (!strcasecmp(key, clean_block_str)) {
+	if (!strcasecmp(key, clean_pool_str)) {
 		if (!strcmp(value, "-1"))
 			p->threshold = p->cache_blocks;
 		else {
