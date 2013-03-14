@@ -67,20 +67,20 @@ static int background_lookup(struct dm_cache_policy *pe, dm_oblock_t oblock, dm_
 }
 
 static int _set_clear_dirty(struct dm_cache_policy *pe,
-			     int (*fn)(struct dm_cache_policy*, dm_oblock_t),
-			     dm_oblock_t oblock)
+			     dm_oblock_t oblock, bool dirty)
 {
 	int r;
 	struct policy *p = to_policy(pe);
 
 	if (p->real_policy) {
-		r = fn(p->real_policy, oblock);
-		if (r > 0) {
+		r = dirty ? policy_set_dirty(p->real_policy, oblock) :
+			    policy_clear_dirty(p->real_policy, oblock);
+		if (!r) {
 			int nr = atomic_read(&p->nr_dirty);
 
-			if (fn == policy_set_dirty) {
+			if (dirty) {
 				if (nr == from_cblock(p->cache_blocks))
-					pr_alert("nr_dirty already max!\n");
+ 					pr_alert("nr_dirty already max!\n");
 				else
 					atomic_inc(&p->nr_dirty);
 
@@ -100,12 +100,12 @@ static int _set_clear_dirty(struct dm_cache_policy *pe,
 
 static int background_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
 {
-	return _set_clear_dirty(pe, policy_set_dirty, oblock);
+	return _set_clear_dirty(pe, oblock, true);
 }
 
 static int background_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
 {
-	return _set_clear_dirty(pe, policy_clear_dirty, oblock);
+	return _set_clear_dirty(pe, oblock, false);
 }
 
 static int background_load_mapping(struct dm_cache_policy *pe,
