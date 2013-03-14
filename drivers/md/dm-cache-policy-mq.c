@@ -533,12 +533,8 @@ static void del(struct mq_policy *mq, struct entry *e)
 {
 	queue_remove(&e->list);
 	hash_remove(e);
-	if (e->in_cache) {
-		if (!list_empty(&e->dirty))
-			list_del_init(&e->dirty);
-
+	if (e->in_cache)
 		free_cblock(mq, e->cblock);
-	}
 }
 
 /*
@@ -935,7 +931,7 @@ static int mq_lookup(struct dm_cache_policy *p, dm_oblock_t oblock, dm_cblock_t 
 
 static int _set_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock, bool dirty)
 {
-	int r;
+	int r = 0;
 	struct mq_policy *mq = to_mq_policy(p);
 	struct entry *e;
 
@@ -945,16 +941,18 @@ static int _set_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock, bool 
 	BUG_ON(!e);
 
 	if (e->in_cache) {
-		r = list_empty(&e->dirty);
+		bool le = list_empty(&e->dirty);
 
 		if (dirty) {
-			if (r)
+			if (le)
 				list_add_tail(&e->dirty, &mq->dirty);
+			else
+				r = -EPERM;
 
-		} else if (!r) {
+		} else if (!le)
 			list_del_init(&e->dirty);
-			r = !r;
-		}
+		else
+			r = -EPERM;
 
 	} else
 		r = -ENOENT;
