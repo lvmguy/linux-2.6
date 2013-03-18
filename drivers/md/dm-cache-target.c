@@ -77,6 +77,7 @@ enum cache_mode {
 struct cache_features {
 	enum cache_mode mode;
 	bool write_through:1;
+	bool avoid_promote:1;
 };
 
 struct cache_stats {
@@ -865,6 +866,8 @@ static void issue_copy(struct dm_cache_migration *mg)
 	if (mg->writeback || mg->demote)
 		avoid = !is_dirty(cache, mg->cblock) ||
 			is_discarded_oblock(cache, mg->old_oblock);
+	else if (!mg->promote)
+		avoid = true;
 	else
 		avoid = is_discarded_oblock(cache, mg->new_oblock);
 
@@ -947,16 +950,24 @@ static void quiesce_migration(struct dm_cache_migration *mg)
 		queue_quiesced_migration(mg);
 }
 
+static bool conditional_promote(struct cache *cache, struct bio *bio)
+{
+	if (cache->features.avoid_promote)
+		return (bio_data_dir(bio) == WRITE && bio_sectors(bio) == cache->sectors_per_block) ? false : true;
+	else
+		return true;
+}
+
 static void promote(struct cache *cache, struct prealloc *structs,
 		    dm_oblock_t oblock, dm_cblock_t cblock,
-		    struct dm_bio_prison_cell *cell)
+		    struct dm_bio_prison_cell *cell, struct bio *bio)
 {
 	struct dm_cache_migration *mg = prealloc_get_migration(structs);
 
 	mg->err = false;
 	mg->writeback = false;
 	mg->demote = false;
-	mg->promote = true;
+	mg->promote = conditional_promote(cache, bio);
 	mg->cache = cache;
 	mg->new_oblock = oblock;
 	mg->cblock = cblock;
@@ -993,14 +1004,15 @@ static void demote_then_promote(struct cache *cache, struct prealloc *structs,
 				dm_oblock_t old_oblock, dm_oblock_t new_oblock,
 				dm_cblock_t cblock,
 				struct dm_bio_prison_cell *old_ocell,
-				struct dm_bio_prison_cell *new_ocell)
+				struct dm_bio_prison_cell *new_ocell,
+				struct bio *bio)
 {
 	struct dm_cache_migration *mg = prealloc_get_migration(structs);
 
 	mg->err = false;
 	mg->writeback = false;
 	mg->demote = true;
-	mg->promote = true;
+	mg->promote = conditional_promote(cache, bio);
 	mg->cache = cache;
 	mg->old_oblock = old_oblock;
 	mg->new_oblock = new_oblock;
@@ -1144,7 +1156,7 @@ static void process_bio(struct cache *cache, struct prealloc *structs,
 
 	case POLICY_NEW:
 		atomic_inc(&cache->stats.promotion);
-		promote(cache, structs, block, lookup_result.cblock, new_ocell);
+		promote(cache, structs, block, lookup_result.cblock, new_ocell, bio);
 		release_cell = false;
 		break;
 
@@ -1169,7 +1181,7 @@ static void process_bio(struct cache *cache, struct prealloc *structs,
 
 		demote_then_promote(cache, structs, lookup_result.old_oblock,
 				    block, lookup_result.cblock,
-				    old_ocell, new_ocell);
+				    old_ocell, new_ocell, bio);
 		release_cell = false;
 		break;
 
@@ -1665,13 +1677,14 @@ static void init_features(struct cache_features *cf)
 {
 	cf->mode = CM_WRITE;
 	cf->write_through = false;
+	cf->avoid_promote = true;
 }
 
 static int parse_features(struct cache_args *ca, struct dm_arg_set *as,
 			  char **error)
 {
 	static struct dm_arg _args[] = {
-		{0, 1, "Invalid number of cache feature arguments"},
+		{0, 2, "Invalid number of cache feature arguments"},
 	};
 
 	int r;
@@ -1693,6 +1706,12 @@ static int parse_features(struct cache_args *ca, struct dm_arg_set *as,
 
 		else if (!strcasecmp(arg, "writethrough"))
 			cf->write_through = true;
+
+		else if (!strcasecmp(arg, "promote"))
+			cf->avoid_promote = false;
+
+		else if (!strcasecmp(arg, "avoid_promote"))
+			cf->avoid_promote = true;
 
 		else {
 			*error = "Unrecognised cache feature requested";
@@ -2044,8 +2063,10 @@ static int cache_ctr(struct dm_target *ti, unsigned argc, char **argv)
 		goto out;
 
 	r = cache_create(ca, &cache);
+	if (r)
+		goto out;
 
-	r = copy_ctr_args(cache, argc - 3, (const char **) argv + 3);
+	r = copy_ctr_args(cache, argc - 3, (const char **)argv + 3);
 	if (r) {
 		destroy(cache);
 		goto out;
@@ -2416,54 +2437,61 @@ static int cache_status(struct dm_target *ti, status_type_t type,
 		       (unsigned long long) from_cblock(residency),
 		       cache->nr_dirty);
 
-		if (cache->features.write_through)
-			DMEMIT("1 writethrough ");
-		else
-			DMEMIT("0 ");
-
-		DMEMIT("2 migration_threshold %llu ", (unsigned long long) cache->migration_threshold);
-		if (sz < maxlen)
+		DMEMIT("4 %s ", cache->features.write_through ? "writethrough" : "writeback");
+		DMEMIT("%spromote ", cache->features.avoid_promote ? "avoid_" : "");
+		DMEMIT("migration_threshold %llu ", (unsigned long long) cache->migration_threshold);
+		if (sz < maxlen) {
 			r = policy_emit_config_values(cache->policy, result + sz, maxlen - sz);
+			if (r)
+				DMERR("policy_emit_config_values returned %d", r);
+		}
+
 		break;
 
 	case STATUSTYPE_TABLE:
-		format_dev_t(buf, cache->metadata_dev->bdev->bd_dev);
-		DMEMIT("%s ", buf);
-		format_dev_t(buf, cache->cache_dev->bdev->bd_dev);
-		DMEMIT("%s ", buf);
-		format_dev_t(buf, cache->origin_dev->bdev->bd_dev);
-		DMEMIT("%s ", buf);
+		DMEMIT("%s ", format_dev_t(buf, cache->metadata_dev->bdev->bd_dev));
+		DMEMIT("%s ", format_dev_t(buf, cache->cache_dev->bdev->bd_dev));
+		DMEMIT("%s",  format_dev_t(buf, cache->origin_dev->bdev->bd_dev));
 
-		for (i = 0; i < cache->nr_ctr_args - 1; i++)
-			DMEMIT("%s ", cache->ctr_args[i]);
-
-		if (cache->nr_ctr_args)
-			DMEMIT("%s", cache->ctr_args[cache->nr_ctr_args - 1]);
+		for (i = 0; i < cache->nr_ctr_args; i++)
+			DMEMIT(" %s", cache->ctr_args[i]);
 	}
 
-	return r;
+	return 0;
+
+err:
+	DMEMIT("Error");
 }
 
 #define NOT_CORE_OPTION 1
 
 static int process_config_option(struct cache *cache, char **argv)
 {
-	if (!strcasecmp(argv[0], "migration_threshold")) {
-		unsigned long tmp;
+	unsigned long tmp;
 
-		if (kstrtoul(argv[1], 10, &tmp))
+	if (!strcasecmp(argv[0], "migration_threshold")) {
+		if (kstrtoul(argv[1], 10, &tmp) || tmp > 100)
 			return -EINVAL;
 
 		cache->migration_threshold = tmp;
-
 		return 0;
+
+	} else if (!strcasecmp(argv[0], "avoid_promote")) {
+		if (!strcasecmp(argv[1], "true")) {
+			cache->features.avoid_promote = true;
+			return 0;
+
+		} else if (!strcasecmp(argv[1], "false")) {
+			cache->features.avoid_promote = false;
+			return 0;
+		}
 	}
 
 	return NOT_CORE_OPTION;
 }
 
 /*
- * Supports <key> <value>
+ * Supports <key> <value>.
  *
  * The key migration_threshold is supported by the cache target core.
  */
