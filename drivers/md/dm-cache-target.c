@@ -1413,24 +1413,29 @@ static void requeue_deferred_io(struct cache *cache)
 	bio_list_init(&cache->deferred_bios);
 
 	while ((bio = bio_list_pop(&bios))) {
-		account_sectors(cache, bio);
+		BUG_ON(atomic_read(&cache->sectors_in_flight) < bio_sectors(bio));
+		atomic_sub(bio_sectors(bio), &cache->sectors_in_flight);
 		bio_endio(bio, DM_ENDIO_REQUEUE);
 	}
 }
 
-static int more_work(struct cache *cache)
+static bool any_deferred_bios(struct cache *cache)
 {
-	if (is_quiescing(cache))
-		return !list_empty(&cache->quiesced_migrations) ||
-			!list_empty(&cache->completed_migrations) ||
-			!list_empty(&cache->need_commit_migrations);
-	else
-		return !bio_list_empty(&cache->deferred_bios) ||
-			!bio_list_empty(&cache->deferred_flush_bios) ||
-			!bio_list_empty(&cache->deferred_writethrough_bios) ||
-			!list_empty(&cache->quiesced_migrations) ||
-			!list_empty(&cache->completed_migrations) ||
-			!list_empty(&cache->need_commit_migrations);
+	return !bio_list_empty(&cache->deferred_bios) ||
+	       !bio_list_empty(&cache->deferred_flush_bios) ||
+	       !bio_list_empty(&cache->deferred_writethrough_bios);
+}
+
+static bool more_work(struct cache *cache)
+{
+	bool r = !list_empty(&cache->quiesced_migrations) ||
+		 !list_empty(&cache->completed_migrations) ||
+		 !list_empty(&cache->need_commit_migrations);
+
+	if (!is_quiescing(cache))
+		r |= any_deferred_bios(cache);
+
+	return r;
 }
 
 static void do_worker(struct work_struct *ws)
