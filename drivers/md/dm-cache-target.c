@@ -211,7 +211,6 @@ struct per_bio_data {
 	dm_cblock_t cblock;
 	bio_end_io_t *saved_bi_end_io;
 	struct dm_bio_details bio_details;
-	sector_t sectors;
 };
 
 struct dm_cache_migration {
@@ -228,7 +227,6 @@ struct dm_cache_migration {
 	bool promote:1;
 	bool avoid_promote:1;
 
-	/* FIXME: make old_cell and deferred_avoid_promote_bio a union. */
 	struct dm_bio_prison_cell *old_ocell;
 	struct dm_bio_prison_cell *new_ocell;
 	struct bio *deferred_avoid_promote_bio;
@@ -552,10 +550,9 @@ static struct per_bio_data *init_per_bio_data(struct bio *bio)
 
 static void account_sectors(struct cache *cache, struct bio *bio)
 {
-	sector_t sectors = bio_sectors(bio);
 	struct per_bio_data *pb = get_per_bio_data(bio);
 
-	pb->sectors = sectors;
+	dm_bio_record(&pb->bio_details, bio);
 	atomic_add(bio_sectors(bio), &cache->sectors_in_flight);
 }
 
@@ -672,8 +669,8 @@ static void writethrough_endio(struct bio *bio, int err)
 	}
 
 	dm_bio_restore(&pb->bio_details, bio);
-	BUG_ON(atomic_read(&cache->sectors_in_flight) < pb->sectors);
-	atomic_sub(pb->sectors, &cache->sectors_in_flight);
+	BUG_ON(atomic_read(&cache->sectors_in_flight) < bio_sectors(bio));
+	atomic_sub(bio_sectors(bio), &cache->sectors_in_flight);
 
 	remap_to_cache(cache, bio, pb->cblock);
 
@@ -698,7 +695,6 @@ static void remap_to_origin_then_cache(struct cache *cache, struct bio *bio,
 	pb->cache = cache;
 	pb->cblock = cblock;
 	pb->saved_bi_end_io = bio->bi_end_io;
-	dm_bio_record(&pb->bio_details, bio);
 	bio->bi_end_io = writethrough_endio;
 
 	remap_to_origin_clear_discard(pb->cache, bio, oblock);
@@ -716,8 +712,9 @@ static void avoid_promote_endio(struct bio *bio, int err)
 	if (err)
 		mg->err = true;
 
-	BUG_ON(atomic_read(&cache->sectors_in_flight) < pb->sectors);
-	atomic_sub(pb->sectors, &cache->sectors_in_flight);
+	dm_bio_restore(&pb->bio_details, bio);
+	BUG_ON(atomic_read(&cache->sectors_in_flight) < bio_sectors(bio));
+	atomic_sub(bio_sectors(bio), &cache->sectors_in_flight);
 
 	/*
 	 * We can't insert the block mapping for this bio directly,
@@ -766,11 +763,6 @@ static void inc_nr_migrations(struct cache *cache)
 static void dec_nr_migrations(struct cache *cache)
 {
 	atomic_dec(&cache->nr_migrations);
-
-	/*
-	 * Wake the worker in case we're suspending the target.
-	 */
-	/* TESTME: */ wake_up(&cache->migration_wait);
 }
 
 static void __cell_defer(struct cache *cache, struct dm_bio_prison_cell *cell,
@@ -2357,8 +2349,9 @@ static int cache_end_io(struct dm_target *ti, struct bio *bio, int error)
 	unsigned long flags;
 	struct per_bio_data *pb = get_per_bio_data(bio);
 
-	BUG_ON(atomic_read(&cache->sectors_in_flight) < pb->sectors);
-	atomic_sub(pb->sectors, &cache->sectors_in_flight);
+	dm_bio_restore(&pb->bio_details, bio);
+	BUG_ON(atomic_read(&cache->sectors_in_flight) < bio_sectors(bio));
+	atomic_sub(bio_sectors(bio), &cache->sectors_in_flight);
 
 	if (pb->tick) {
 		policy_tick(cache->policy);
