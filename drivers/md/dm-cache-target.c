@@ -663,15 +663,6 @@ static void writethrough_endio(struct bio *bio, int err)
 
 	bio->bi_end_io = pb->saved_bi_end_io;
 
-	BUG_ON(atomic_read(&cache->sectors_in_flight) < bio_sectors(bio));
-	atomic_sub(bio_sectors(bio), &cache->sectors_in_flight);
-
-	if (err) {
-		account_sectors(cache, bio);
-		bio_endio(bio, err);
-		return;
-	}
-
 	dm_bio_restore(&pb->bio_details, bio);
 	BUG_ON(atomic_read(&cache->sectors_in_flight) < bio_sectors(bio));
 	atomic_sub(bio_sectors(bio), &cache->sectors_in_flight);
@@ -934,7 +925,7 @@ static void migration_success_post_commit(struct dm_cache_migration *mg)
 	} else if (mg->demote || mg->avoid_promote) {
 		if (mg->demote) {
 			mg->demote = false;
-			cell_defer(cache, mg->old_ocell, !mg->promote);
+			cell_defer(cache, mg->old_ocell, false);
 		}
 
 		if (mg->promote)
