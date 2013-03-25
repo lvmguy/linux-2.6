@@ -260,7 +260,7 @@ EXPORT_SYMBOL_GPL(dm_cell_error);
 #define DEFERRED_SET_SIZE 64
 
 struct dm_deferred_entry {
-	struct dm_deferred_set *ds;
+	unsigned nr;
 	unsigned count;
 	struct list_head work_items;
 };
@@ -272,9 +272,14 @@ struct dm_deferred_set {
 	struct dm_deferred_entry entries[DEFERRED_SET_SIZE];
 };
 
+static struct dm_deferred_set *__ds_entry(struct dm_deferred_entry *entry)
+{
+	return (struct dm_deferred_set *) ((void *) (entry - entry->nr) - offsetof(struct dm_deferred_set, entries));
+}
+
 struct dm_deferred_set *dm_deferred_set_create(void)
 {
-	int i;
+	unsigned i;
 	struct dm_deferred_set *ds;
 
 	ds = kmalloc(sizeof(*ds), GFP_KERNEL);
@@ -285,7 +290,7 @@ struct dm_deferred_set *dm_deferred_set_create(void)
 	ds->current_entry = 0;
 	ds->sweeper = 0;
 	for (i = 0; i < DEFERRED_SET_SIZE; i++) {
-		ds->entries[i].ds = ds;
+		ds->entries[i].nr = i;
 		ds->entries[i].count = 0;
 		INIT_LIST_HEAD(&ds->entries[i].work_items);
 	}
@@ -334,12 +339,13 @@ static void __sweep(struct dm_deferred_set *ds, struct list_head *head)
 void dm_deferred_entry_dec(struct dm_deferred_entry *entry, struct list_head *head)
 {
 	unsigned long flags;
+	struct dm_deferred_set *ds = __ds_entry(entry);
 
-	spin_lock_irqsave(&entry->ds->lock, flags);
+	spin_lock_irqsave(&ds->lock, flags);
 	BUG_ON(!entry->count);
 	--entry->count;
-	__sweep(entry->ds, head);
-	spin_unlock_irqrestore(&entry->ds->lock, flags);
+	__sweep(ds, head);
+	spin_unlock_irqrestore(&ds->lock, flags);
 }
 EXPORT_SYMBOL_GPL(dm_deferred_entry_dec);
 
