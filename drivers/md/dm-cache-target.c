@@ -545,7 +545,7 @@ static struct per_bio_data *init_per_bio_data(struct bio *bio)
 }
 
 /*----------------------------------------------------------------
- * Remapping
+ * Sector accounting / requeueing / endio processing
  *--------------------------------------------------------------*/
 
 static void account_sectors(struct cache *cache, struct bio *bio)
@@ -555,6 +555,30 @@ static void account_sectors(struct cache *cache, struct bio *bio)
 	dm_bio_record(&pb->bio_details, bio);
 	atomic_add(bio_sectors(bio), &cache->sectors_in_flight);
 }
+
+static void account_end_endio(struct cache *cache, struct bio *bio, bool bio_err, int err)
+{
+	account_sectors(cache, bio);
+	bio_endio(bio, bio_err ? err : 0);
+}
+
+static void requeue_deferred_io(struct cache *cache)
+{
+	struct bio *bio;
+
+	while ((bio = bio_list_pop(&cache->deferred_bios)))
+		account_end_endio(cache, bio, false, DM_ENDIO_REQUEUE);
+}
+
+static void endio_deferred_bio(struct dm_cache_migration *mg)
+{
+	if (mg->deferred_avoid_promote_bio)
+		account_end_endio(mg->cache, mg->deferred_avoid_promote_bio, mg->err, -EIO);
+}
+
+/*----------------------------------------------------------------
+ * Remapping
+ *--------------------------------------------------------------*/
 
 static void remap_to_origin(struct cache *cache, struct bio *bio)
 {
@@ -662,6 +686,11 @@ static void writethrough_endio(struct bio *bio, int err)
 	struct cache *cache = pb->cache;
 
 	bio->bi_end_io = pb->saved_bi_end_io;
+
+	if (err) {
+		bio_endio(bio, err);
+		return;
+	}
 
 	dm_bio_restore(&pb->bio_details, bio);
 	BUG_ON(atomic_read(&cache->sectors_in_flight) < bio_sectors(bio));
@@ -913,7 +942,6 @@ static void migration_success_pre_commit(struct dm_cache_migration *mg)
 	spin_unlock_irqrestore(&cache->lock, flags);
 }
 
-static void endio_deferred_bio(struct dm_cache_migration *);
 static void migration_success_post_commit(struct dm_cache_migration *mg)
 {
 	struct cache *cache = mg->cache;
@@ -1486,26 +1514,6 @@ static void stop_worker(struct cache *cache)
 {
 	cancel_delayed_work(&cache->waker);
 	flush_workqueue(cache->wq);
-}
-
-static void account_end_endio(struct cache *cache, struct bio *bio, bool bio_err, int err)
-{
-	account_sectors(cache, bio);
-	bio_endio(bio, bio_err ? err : 0);
-}
-
-static void requeue_deferred_io(struct cache *cache)
-{
-	struct bio *bio;
-
-	while ((bio = bio_list_pop(&cache->deferred_bios)))
-		account_end_endio(cache, bio, false, DM_ENDIO_REQUEUE);
-}
-
-static void endio_deferred_bio(struct dm_cache_migration *mg)
-{
-	if (mg->deferred_avoid_promote_bio)
-		account_end_endio(mg->cache, mg->deferred_avoid_promote_bio, mg->err, -EIO);
 }
 
 static bool any_deferred_bios(struct cache *cache)
