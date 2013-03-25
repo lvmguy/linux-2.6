@@ -663,7 +663,11 @@ static void writethrough_endio(struct bio *bio, int err)
 
 	bio->bi_end_io = pb->saved_bi_end_io;
 
+	BUG_ON(atomic_read(&cache->sectors_in_flight) < bio_sectors(bio));
+	atomic_sub(bio_sectors(bio), &cache->sectors_in_flight);
+
 	if (err) {
+		account_sectors(cache, bio);
 		bio_endio(bio, err);
 		return;
 	}
@@ -859,6 +863,7 @@ static void migration_failure(struct dm_cache_migration *mg)
 		cell_defer(cache, mg->old_ocell, false);
 		if (mg->new_ocell)
 			cell_defer(cache, mg->new_ocell, true);
+
 	} else {
 		DMWARN_LIMIT("promotion failed; couldn't copy block");
 		policy_remove_mapping(cache->policy, mg->new_oblock);
@@ -929,7 +934,7 @@ static void migration_success_post_commit(struct dm_cache_migration *mg)
 	} else if (mg->demote || mg->avoid_promote) {
 		if (mg->demote) {
 			mg->demote = false;
-			cell_defer(cache, mg->old_ocell, false);
+			cell_defer(cache, mg->old_ocell, !mg->promote);
 		}
 
 		if (mg->promote)
@@ -1122,7 +1127,8 @@ static void demote_then_promote(struct cache *cache, struct prealloc *structs,
 				dm_oblock_t old_oblock, dm_oblock_t new_oblock,
 				dm_cblock_t cblock,
 				struct dm_bio_prison_cell *old_ocell,
-				struct dm_bio_prison_cell *new_ocell)
+				struct dm_bio_prison_cell *new_ocell,
+				struct bio *bio)
 {
 	struct dm_cache_migration *mg = prealloc_init_migration(cache, structs, old_oblock, new_oblock, cblock, old_ocell, new_ocell);
 
