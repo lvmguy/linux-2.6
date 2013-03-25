@@ -1127,8 +1127,7 @@ static void demote_then_promote(struct cache *cache, struct prealloc *structs,
 				dm_oblock_t old_oblock, dm_oblock_t new_oblock,
 				dm_cblock_t cblock,
 				struct dm_bio_prison_cell *old_ocell,
-				struct dm_bio_prison_cell *new_ocell,
-				struct bio *bio)
+				struct dm_bio_prison_cell *new_ocell)
 {
 	struct dm_cache_migration *mg = prealloc_init_migration(cache, structs, old_oblock, new_oblock, cblock, old_ocell, new_ocell);
 
