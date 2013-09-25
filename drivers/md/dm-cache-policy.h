@@ -140,8 +140,8 @@ struct dm_cache_policy {
 	/*
 	 * oblock must be a mapped block.  Must not block.
 	 */
-	void (*set_dirty)(struct dm_cache_policy *p, dm_oblock_t oblock);
-	void (*clear_dirty)(struct dm_cache_policy *p, dm_oblock_t oblock);
+	int (*set_dirty)(struct dm_cache_policy *p, dm_oblock_t oblock);
+	int (*clear_dirty)(struct dm_cache_policy *p, dm_oblock_t oblock);
 
 	/*
 	 * Called when a cache target is first created.  Used to load a
@@ -220,7 +220,7 @@ struct dm_cache_policy_type {
 
 	/*
 	 * Policies may store a hint for each each cache block.
-	 * Currently the size of this hint must <= 512 bytes.
+	 * Currently the size of this hint must <= 128 bytes.
 	 */
 	size_t hint_size;
 
