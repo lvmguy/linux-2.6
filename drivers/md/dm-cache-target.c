@@ -204,6 +204,7 @@ struct cache {
 	sector_t migration_threshold;
 	wait_queue_head_t migration_wait;
 	atomic_t nr_migrations;
+	atomic_t ios_in_flight;
 
 	/*
 	 * cache_size entries, dirty if set
@@ -709,12 +710,18 @@ static int bio_triggers_commit(struct cache *cache, struct bio *bio)
 	return bio->bi_rw & (REQ_FLUSH | REQ_FUA);
 }
 
+static void __generic_make_request(struct cache *cache, struct bio *bio)
+{
+	atomic_inc(&cache->ios_in_flight);
+	generic_make_request(bio);
+}
+
 static void issue(struct cache *cache, struct bio *bio)
 {
 	unsigned long flags;
 
 	if (!bio_triggers_commit(cache, bio)) {
-		generic_make_request(bio);
+		__generic_make_request(cache, bio);
 		return;
 	}
 
@@ -751,6 +758,8 @@ static void writethrough_endio(struct bio *bio, int err)
 
 	dm_bio_restore(&pb->bio_details, bio);
 	remap_to_cache(pb->cache, bio, pb->cblock);
+
+	atomic_dec(&pb->cache->ios_in_flight);
 
 	/*
 	 * We can't issue this bio directly, since we're in interrupt
@@ -924,6 +933,7 @@ static void migration_success_post_commit(struct dm_cache_migration *mg)
 		if (mg->requeue_holder)
 			cell_defer(cache, mg->new_ocell, true);
 		else {
+			atomic_inc(&cache->ios_in_flight);
 			bio_endio(mg->new_ocell->holder, 0);
 			cell_defer(cache, mg->new_ocell, false);
 		}
@@ -991,6 +1001,7 @@ static void overwrite_endio(struct bio *bio, int err)
 	spin_lock_irqsave(&cache->lock, flags);
 	list_add_tail(&mg->list, &cache->completed_migrations);
 	unhook_bio(&pb->hook_info, bio);
+	atomic_dec(&cache->ios_in_flight);
 	mg->requeue_holder = false;
 	spin_unlock_irqrestore(&cache->lock, flags);
 
@@ -1004,7 +1015,7 @@ static void issue_overwrite(struct dm_cache_migration *mg, struct bio *bio)
 
 	hook_bio(&pb->hook_info, bio, overwrite_endio, mg);
 	remap_to_cache_dirty(mg->cache, bio, mg->new_oblock, mg->cblock);
-	generic_make_request(bio);
+	__generic_make_request(mg->cache, bio);
 }
 
 static bool bio_writes_complete_block(struct cache *cache, struct bio *bio)
@@ -1269,14 +1280,18 @@ static void process_discard_bio(struct cache *cache, struct bio *bio)
 	for (b = start_block; b < end_block; b++)
 		set_discard(cache, to_dblock(b));
 
+	atomic_inc(&cache->ios_in_flight);
 	bio_endio(bio, 0);
 }
 
+/* FIXME: enhance this to take user and migration IO volume into account. */
 static bool spare_migration_bandwidth(struct cache *cache)
 {
-	sector_t current_volume = (atomic_read(&cache->nr_migrations) + 1) *
-		cache->sectors_per_block;
-	return current_volume < cache->migration_threshold;
+	unsigned current_migrations = atomic_read(&cache->nr_migrations);
+	unsigned current_ios;
+
+	current_ios = atomic_read(&cache->ios_in_flight);
+	return current_migrations * cache->migration_threshold <= current_ios * 100;
 }
 
 static void inc_hit_counter(struct cache *cache, struct bio *bio)
@@ -1494,7 +1509,7 @@ static void process_deferred_flush_bios(struct cache *cache, bool submit_bios)
 	spin_unlock_irqrestore(&cache->lock, flags);
 
 	while ((bio = bio_list_pop(&bios)))
-		submit_bios ? generic_make_request(bio) : bio_io_error(bio);
+		submit_bios ? __generic_make_request(cache, bio) : bio_io_error(bio);
 }
 
 static void process_deferred_writethrough_bios(struct cache *cache)
@@ -1511,7 +1526,7 @@ static void process_deferred_writethrough_bios(struct cache *cache)
 	spin_unlock_irqrestore(&cache->lock, flags);
 
 	while ((bio = bio_list_pop(&bios)))
-		generic_make_request(bio);
+		__generic_make_request(cache, bio);
 }
 
 static void writeback_some_dirty_blocks(struct cache *cache)
@@ -1597,8 +1612,10 @@ static void requeue_deferred_io(struct cache *cache)
 	bio_list_merge(&bios, &cache->deferred_bios);
 	bio_list_init(&cache->deferred_bios);
 
-	while ((bio = bio_list_pop(&bios)))
+	while ((bio = bio_list_pop(&bios))) {
+		atomic_inc(&cache->ios_in_flight);
 		bio_endio(bio, DM_ENDIO_REQUEUE);
+	}
 }
 
 static void invalidate_mappings(struct cache *cache)
@@ -2090,7 +2107,9 @@ static int process_config_option(struct cache *cache, const char *key, const cha
 	unsigned long tmp;
 
 	if (!strcasecmp(key, "migration_threshold")) {
-		if (kstrtoul(value, 10, &tmp))
+		if (kstrtoul(value, 10, &tmp) ||
+		    !tmp ||
+		    tmp > 100)
 			return -EINVAL;
 
 		cache->migration_threshold = tmp;
@@ -2178,7 +2197,7 @@ static sector_t calculate_discard_block_size(sector_t cache_block_size,
 	return discard_block_size;
 }
 
-#define DEFAULT_MIGRATION_THRESHOLD 2048
+#define DEFAULT_MIGRATION_THRESHOLD 50 /* percent */
 
 static int cache_create(struct cache_args *ca, struct cache **result)
 {
@@ -2283,6 +2302,7 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	INIT_LIST_HEAD(&cache->completed_migrations);
 	INIT_LIST_HEAD(&cache->need_commit_migrations);
 	atomic_set(&cache->nr_migrations, 0);
+	atomic_set(&cache->ios_in_flight, 0);
 	init_waitqueue_head(&cache->migration_wait);
 
 	r = -ENOMEM;
@@ -2445,6 +2465,7 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 		 * Just remap to the origin and carry on.
 		 */
 		remap_to_origin_clear_discard(cache, bio, block);
+		atomic_inc(&cache->ios_in_flight);
 		return DM_MAPIO_REMAPPED;
 	}
 
@@ -2498,6 +2519,7 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 				 * We need to invalidate this block, so
 				 * defer for the worker thread.
 				 */
+				atomic_inc(&cache->ios_in_flight);
 				cell_defer(cache, cell, true);
 				r = DM_MAPIO_SUBMITTED;
 
@@ -2505,7 +2527,7 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 				pb->all_io_entry = dm_deferred_entry_inc(cache->all_io_ds);
 				inc_miss_counter(cache, bio);
 				remap_to_origin_clear_discard(cache, bio, block);
-
+				atomic_inc(&cache->ios_in_flight);
 				cell_defer(cache, cell, false);
 			}
 
@@ -2520,8 +2542,8 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 			else
 				remap_to_cache_dirty(cache, bio, block, lookup_result.cblock);
 
+			atomic_inc(&cache->ios_in_flight);
 			cell_defer(cache, cell, false);
-
 		}
 		break;
 
@@ -2534,11 +2556,13 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 			 * This is a duplicate writethrough io that is no
 			 * longer needed because the block has been demoted.
 			 */
+			atomic_inc(&cache->ios_in_flight);
 			bio_endio(bio, 0);
 			cell_defer(cache, cell, false);
 			return DM_MAPIO_SUBMITTED;
 		} else {
 			remap_to_origin_clear_discard(cache, bio, block);
+			atomic_inc(&cache->ios_in_flight);
 			cell_defer(cache, cell, false);
 		}
 		break;
@@ -2546,6 +2570,7 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 	default:
 		DMERR_LIMIT("%s: erroring bio: unknown policy op: %u", __func__,
 			    (unsigned) lookup_result.op);
+		atomic_inc(&cache->ios_in_flight);
 		bio_io_error(bio);
 		r = DM_MAPIO_SUBMITTED;
 	}
@@ -2559,6 +2584,9 @@ static int cache_end_io(struct dm_target *ti, struct bio *bio, int error)
 	unsigned long flags;
 	size_t pb_data_size = get_per_bio_data_size(cache);
 	struct per_bio_data *pb = get_per_bio_data(bio, pb_data_size);
+
+	// BUG_ON(!atomic_read(&cache->ios_in_flight));
+	atomic_dec(&cache->ios_in_flight);
 
 	if (pb->tick) {
 		policy_tick(cache->policy);
@@ -2856,7 +2884,7 @@ static void cache_status(struct dm_target *ti, status_type_t type,
 
 		residency = policy_residency(cache->policy);
 
-		DMEMIT("%llu/%llu %u %u %u %u %u %u %llu %u ",
+		DMEMIT("%llu/%llu %u %u %u %u %u %u %llu %u *%d* ",
 		       (unsigned long long)(nr_blocks_metadata - nr_free_blocks_metadata),
 		       (unsigned long long)nr_blocks_metadata,
 		       (unsigned) atomic_read(&cache->stats.read_hit),
@@ -2866,7 +2894,8 @@ static void cache_status(struct dm_target *ti, status_type_t type,
 		       (unsigned) atomic_read(&cache->stats.demotion),
 		       (unsigned) atomic_read(&cache->stats.promotion),
 		       (unsigned long long) from_cblock(residency),
-		       cache->nr_dirty);
+		       cache->nr_dirty,
+		       atomic_read(&cache->ios_in_flight));
 
 		if (writethrough_mode(&cache->features))
 			DMEMIT("1 writethrough ");
