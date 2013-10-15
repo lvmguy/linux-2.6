@@ -1,0 +1,1 @@
+bool dm_cache_is_shim_policy(struct dm_cache_policy *p);
