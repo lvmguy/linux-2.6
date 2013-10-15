@@ -710,9 +710,19 @@ static int bio_triggers_commit(struct cache *cache, struct bio *bio)
 	return bio->bi_rw & (REQ_FLUSH | REQ_FUA);
 }
 
-static void __generic_make_request(struct cache *cache, struct bio *bio)
+static void account_bio(struct cache *cache, struct bio *bio)
 {
 	atomic_inc(&cache->ios_in_flight);
+}
+
+static void discount_bio(struct cache *cache, struct bio *bio)
+{
+	atomic_dec(&cache->ios_in_flight);
+}
+
+static void __generic_make_request(struct cache *cache, struct bio *bio)
+{
+	account_bio(cache, bio);
 	generic_make_request(bio);
 }
 
@@ -759,7 +769,7 @@ static void writethrough_endio(struct bio *bio, int err)
 	dm_bio_restore(&pb->bio_details, bio);
 	remap_to_cache(pb->cache, bio, pb->cblock);
 
-	atomic_dec(&pb->cache->ios_in_flight);
+	discount_bio(pb->cache, bio);
 
 	/*
 	 * We can't issue this bio directly, since we're in interrupt
@@ -933,7 +943,7 @@ static void migration_success_post_commit(struct dm_cache_migration *mg)
 		if (mg->requeue_holder)
 			cell_defer(cache, mg->new_ocell, true);
 		else {
-			atomic_inc(&cache->ios_in_flight);
+			account_bio(cache, mg->new_ocell->holder);
 			bio_endio(mg->new_ocell->holder, 0);
 			cell_defer(cache, mg->new_ocell, false);
 		}
@@ -1001,7 +1011,7 @@ static void overwrite_endio(struct bio *bio, int err)
 	spin_lock_irqsave(&cache->lock, flags);
 	list_add_tail(&mg->list, &cache->completed_migrations);
 	unhook_bio(&pb->hook_info, bio);
-	atomic_dec(&cache->ios_in_flight);
+	discount_bio(cache, bio);
 	mg->requeue_holder = false;
 	spin_unlock_irqrestore(&cache->lock, flags);
 
@@ -1280,7 +1290,7 @@ static void process_discard_bio(struct cache *cache, struct bio *bio)
 	for (b = start_block; b < end_block; b++)
 		set_discard(cache, to_dblock(b));
 
-	atomic_inc(&cache->ios_in_flight);
+	account_bio(cache, bio);
 	bio_endio(bio, 0);
 }
 
@@ -1613,7 +1623,7 @@ static void requeue_deferred_io(struct cache *cache)
 	bio_list_init(&cache->deferred_bios);
 
 	while ((bio = bio_list_pop(&bios))) {
-		atomic_inc(&cache->ios_in_flight);
+		account_bio(cache, bio);
 		bio_endio(bio, DM_ENDIO_REQUEUE);
 	}
 }
@@ -2465,7 +2475,7 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 		 * Just remap to the origin and carry on.
 		 */
 		remap_to_origin_clear_discard(cache, bio, block);
-		atomic_inc(&cache->ios_in_flight);
+		account_bio(cache, bio);
 		return DM_MAPIO_REMAPPED;
 	}
 
@@ -2519,7 +2529,7 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 				 * We need to invalidate this block, so
 				 * defer for the worker thread.
 				 */
-				atomic_inc(&cache->ios_in_flight);
+				account_bio(cache, bio);
 				cell_defer(cache, cell, true);
 				r = DM_MAPIO_SUBMITTED;
 
@@ -2527,7 +2537,7 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 				pb->all_io_entry = dm_deferred_entry_inc(cache->all_io_ds);
 				inc_miss_counter(cache, bio);
 				remap_to_origin_clear_discard(cache, bio, block);
-				atomic_inc(&cache->ios_in_flight);
+				account_bio(cache, bio);
 				cell_defer(cache, cell, false);
 			}
 
@@ -2542,7 +2552,7 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 			else
 				remap_to_cache_dirty(cache, bio, block, lookup_result.cblock);
 
-			atomic_inc(&cache->ios_in_flight);
+			account_bio(cache, bio);
 			cell_defer(cache, cell, false);
 		}
 		break;
@@ -2556,13 +2566,13 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 			 * This is a duplicate writethrough io that is no
 			 * longer needed because the block has been demoted.
 			 */
-			atomic_inc(&cache->ios_in_flight);
+			account_bio(cache, bio);
 			bio_endio(bio, 0);
 			cell_defer(cache, cell, false);
 			return DM_MAPIO_SUBMITTED;
 		} else {
 			remap_to_origin_clear_discard(cache, bio, block);
-			atomic_inc(&cache->ios_in_flight);
+			account_bio(cache, bio);
 			cell_defer(cache, cell, false);
 		}
 		break;
@@ -2570,7 +2580,7 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 	default:
 		DMERR_LIMIT("%s: erroring bio: unknown policy op: %u", __func__,
 			    (unsigned) lookup_result.op);
-		atomic_inc(&cache->ios_in_flight);
+		account_bio(cache, bio);
 		bio_io_error(bio);
 		r = DM_MAPIO_SUBMITTED;
 	}
@@ -2585,8 +2595,8 @@ static int cache_end_io(struct dm_target *ti, struct bio *bio, int error)
 	size_t pb_data_size = get_per_bio_data_size(cache);
 	struct per_bio_data *pb = get_per_bio_data(bio, pb_data_size);
 
-	// BUG_ON(!atomic_read(&cache->ios_in_flight));
-	atomic_dec(&cache->ios_in_flight);
+	BUG_ON(!atomic_read(&cache->ios_in_flight));
+	discount_bio(cache, bio);
 
 	if (pb->tick) {
 		policy_tick(cache->policy);
