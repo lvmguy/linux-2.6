@@ -315,8 +315,7 @@ struct mq_policy {
 	 */
 	unsigned long *allocation_bitset;
 	unsigned nr_cblocks_allocated;
-	unsigned find_free_nr_words;
-	unsigned find_free_last_word;
+	unsigned long find_free_last_cblock;
 
 	/*
 	 * The hash table allows us to quickly find an entry by origin
@@ -467,41 +466,22 @@ static bool any_clean_cblocks(struct mq_policy *mq)
  * -ENOSPC.  This does _not_ mark the cblock as allocated, the caller is
  * reponsible for that.
  */
-static int __find_free_cblock(struct mq_policy *mq, unsigned begin, unsigned end,
-			      dm_cblock_t *result, unsigned *last_word)
-{
-	int r = -ENOSPC;
-	unsigned w;
-
-	for (w = begin; w < end; w++) {
-		/*
-		 * ffz is undefined if no zero exists
-		 */
-		if (mq->allocation_bitset[w] != ~0UL) {
-			*last_word = w;
-			*result = to_cblock((w * BITS_PER_LONG) + ffz(mq->allocation_bitset[w]));
-			if (from_cblock(*result) < from_cblock(mq->cache_size))
-				r = 0;
-
-			break;
-		}
-	}
-
-	return r;
-}
-
 static int find_free_cblock(struct mq_policy *mq, dm_cblock_t *result)
 {
-	int r;
+	if (any_free_cblocks(mq)) {
+		int bit = find_next_zero_bit(mq->allocation_bitset,
+					     from_cblock(mq->cache_size), mq->find_free_last_cblock);
 
-	if (!any_free_cblocks(mq))
-		return -ENOSPC;
+		/* Retry from begin if we started the search at an offset above. */
+		if (bit > from_cblock(mq->cache_size) && mq->find_free_last_cblock)
+			bit = find_next_zero_bit(mq->allocation_bitset, mq->find_free_last_cblock, 0);
 
-	r = __find_free_cblock(mq, mq->find_free_last_word, mq->find_free_nr_words, result, &mq->find_free_last_word);
-	if (r == -ENOSPC && mq->find_free_last_word)
-		r = __find_free_cblock(mq, 0, mq->find_free_last_word, result, &mq->find_free_last_word);
+		mq->find_free_last_cblock = bit + 1;
+		*result = to_cblock(bit);
+		return 0;
+	}
 
-	return r;
+	return -ENOSPC;
 }
 
 /*----------------------------------------------------------------*/
@@ -1309,8 +1289,7 @@ static struct dm_cache_policy *mq_create(dm_cblock_t cache_size,
 	mq->promote_threshold = 0;
 	mutex_init(&mq->lock);
 	spin_lock_init(&mq->tick_lock);
-	mq->find_free_nr_words = dm_div_up(from_cblock(mq->cache_size), BITS_PER_LONG);
-	mq->find_free_last_word = 0;
+	mq->find_free_last_cblock = 0;
 
 	queue_init(&mq->pre_cache);
 	queue_init(&mq->cache_clean);
