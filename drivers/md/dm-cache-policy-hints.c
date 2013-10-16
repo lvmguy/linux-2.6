@@ -81,7 +81,7 @@ static struct entry *queue_pop(struct list_head *q)
 		list_del(elt);
 		return list_entry(elt, struct entry, list);
 	}
-	
+
 	return NULL;
 }
 /*----------------------------------------------------------------------------*/
@@ -473,11 +473,11 @@ static void __hints_xfer_disk(struct policy *p, bool to_disk)
 	};
 
 	struct hints_ptrs hints_ptrs;
- 
+
 	if (!p->hint_size_set) {
 		calc_hint_value_counters(p);
 		p->hint_size_set = true;
-	}	
+	}
 
 	/* Must happen after calc_hint_value_counters()! */
 	set_hints_ptrs(p, &hints_ptrs);
@@ -649,7 +649,7 @@ static int hints_emit_config_values(struct dm_cache_policy *pe, char *result, un
 {
 	ssize_t sz = 0;
 
-	DMEMIT("hint_size %llu", (long long unsigned) dm_cache_policy_get_hint_size(pe));
+	DMEMIT("2 hint_size %llu", (long long unsigned) dm_cache_policy_get_hint_size(pe));
 	return 0;
 }
 
