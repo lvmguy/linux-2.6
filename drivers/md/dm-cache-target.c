@@ -1717,7 +1717,8 @@ start = jiffies; /* FIXME: REMOVEME */
 	}
 
 	cache->invalidate = false;
-DMINFO("%llu mappings invalidated in %llu jiffies", count, jiffies -  start); /* FIXME: REMOVEME */
+
+	DMINFO("%llu mappings invalidated in %llu jiffies", count, jiffies -  start); /* FIXME: REMOVEME */
 }
 
 static int more_work(struct cache *cache)
@@ -3039,8 +3040,6 @@ static int set_invalidate_mappings(struct cache *cache, char **argv)
 		DMERR("begin origin block > end origin block");
 		return -EINVAL;
 	}
-
-DMINFO("%s -- begin=%llu end=%llu", __func__, begin, end); /* FIXME: REMOVEME */
 
 	/* Pass begin and end origin blocks to the worker and wake it. */
 	cache->begin_invalidate = to_oblock(begin);

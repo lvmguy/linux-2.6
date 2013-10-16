@@ -29,6 +29,8 @@
 
 #include <linux/delay.h>
 
+#define	DEBUG_ERA	0
+
 #define DM_MSG_PREFIX "cache-policy-era+"
 
 typedef uint32_t era_t;
@@ -163,7 +165,9 @@ static void *era_cblock_to_hint(struct shim_walk_map_ctx *ctx,
 	struct era_policy *era = to_era_policy(ctx->my_policy);
 	era_t era_val;
 	era_val = era->cb_to_era[from_cblock(cblock)];
+#if DEBUG_ERA
 	DMDEBUG("storing era %u for cblock %u.", era_val, cblock);
+#endif
 	ctx->le32_buf = cpu_to_le32(era_val);
 	return &ctx->le32_buf;
 }
@@ -201,9 +205,11 @@ static int era_inval_oblocks(void *context, dm_cblock_t cblock,
 	era_t act_era = ctx->era->cb_to_era[from_cblock(cblock)];
 
 	if (ctx->era_match_fn(act_era, ctx->test_era)) {
+#if DEBUG_ERA
 		DMDEBUG("cblock %u has era %u matching test_era %u; "
 			"marking mapping to be removed for oblock %llu.",
 			from_cblock(cblock), act_era, ctx->test_era, oblock);
+#endif
 
 		set_bit(from_cblock(cblock), ctx->era->invalidate.bitset);
 		ctx->era->invalidate.oblocks[from_cblock(cblock)] = oblock;
@@ -296,9 +302,11 @@ static int era_map(struct dm_cache_policy *p, dm_oblock_t oblock,
 		cb_idx = from_cblock(result->cblock);
 		BUG_ON(cb_idx >= from_cblock(era->cache_size));
 		smp_rmb();
+#if DEBUG_ERA
 		/* FIXME: remove this */
 		DMDEBUG("assigning era %u to cblock %u, oblock %llu due to write hit.",
 			era->era_counter, result->cblock, oblock);
+#endif
 		era->cb_to_era[cb_idx] = era->era_counter;
 	}
 
@@ -405,7 +413,10 @@ static int era_invalidate_mapping(struct dm_cache_policy *p,
 		clear_bit(from_cblock(*cblock), era->invalidate.bitset);
 		*oblock = era->invalidate.oblocks[from_cblock(*cblock)];
 		r = policy_invalidate_mapping(p->child, oblock, cblock);
+#if DEBUG_ERA
+		/* FIXME: REMOVEME: */
 		DMDEBUG("unmapped cblock=%u oblock=%llu", from_cblock(*cblock), from_oblock(*oblock));
+#endif
 	}
 
 	return r;
