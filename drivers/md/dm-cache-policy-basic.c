@@ -1429,7 +1429,7 @@ static int _set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bool
 	queue_del(&e->dirty);
 
 	if (dirty)
-		add_dirty_entry(p, e); 
+		add_dirty_entry(p, e);
 
 	mutex_unlock(&p->lock);
 
@@ -1508,7 +1508,7 @@ static int basic_walk_mappings(struct dm_cache_policy *pe, policy_walk_fn fn,
 				tmp = from_cblock(p->cache_size) - tmp - 1;
 
 			hints[0] = cpu_to_le32(tmp);
-	
+
 		} else {
 			hints[0] = cpu_to_le32(e->ce.count[T_HITS][0]);
 			hints[1] = cpu_to_le32(e->ce.count[T_HITS][1]);
@@ -1695,7 +1695,7 @@ static void init_policy_functions(struct policy *p)
 	p->policy.walk_mappings = basic_walk_mappings;
 	p->policy.remove_mapping = basic_remove_mapping;
 	p->policy.invalidate_mapping = basic_invalidate_mapping;
-	p->policy.writeback_work = basic_next_dirty_block; // NULL for background policy. 
+	p->policy.writeback_work = basic_next_dirty_block; /* NULL for background policy. */
 	p->policy.next_dirty_block = basic_next_dirty_block;
 	p->policy.force_mapping = basic_force_mapping;
 	p->policy.residency = basic_residency;
@@ -1860,7 +1860,8 @@ static struct dm_cache_policy_type policy ## _policy_type = { \
 	.name = #policy, \
 	.hint_size = hints_size, \
 	.owner = THIS_MODULE, \
-	.create = policy ## _create \
+	.create = policy ## _create, \
+	.shim = false \
 };
 
 #define	__CREATE_POLICY_TYPE(policy, hint_size) \

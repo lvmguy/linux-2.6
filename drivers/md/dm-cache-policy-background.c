@@ -247,7 +247,9 @@ static struct dm_cache_policy *background_create(dm_cblock_t cache_blocks,
 static struct dm_cache_policy_type background_policy_type = {
 	.name = "background",
 	.owner = THIS_MODULE,
-        .create = background_create
+	.version = {1, 0, 0},
+        .create = background_create,
+	.shim = false /* FIXME: has to change when coded as a shim policy! */
 };
 
 static int __init background_init(void)
