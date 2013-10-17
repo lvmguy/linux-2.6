@@ -134,7 +134,7 @@ static void background_force_mapping(struct dm_cache_policy *pe,
 static int background_writeback_work(struct dm_cache_policy *pe,
 				     dm_oblock_t *oblock, dm_cblock_t *cblock)
 {
-	return policy_next_dirty_block(to_policy(pe)->real_policy, oblock, cblock);
+	return -ENOENT; // policy_next_dirty_block(to_policy(pe)->real_policy, oblock, cblock);
 }
 
 static dm_cblock_t background_residency(struct dm_cache_policy *pe)
@@ -205,7 +205,7 @@ static void init_policy_functions(struct policy *p, bool create)
 		p->policy.map = background_map;
 		p->policy.lookup = background_lookup;
 		p->policy.load_mapping = background_load_mapping;
-		p->policy.next_dirty_block = NULL;
+		// p->policy.next_dirty_block = NULL;
 		p->policy.remove_mapping = background_remove_mapping;
 		p->policy.force_mapping = background_force_mapping;
 		p->policy.residency = background_residency;
