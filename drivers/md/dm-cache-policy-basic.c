@@ -1696,7 +1696,7 @@ static void init_policy_functions(struct policy *p)
 	p->policy.remove_mapping = basic_remove_mapping;
 	p->policy.invalidate_mapping = basic_invalidate_mapping;
 	p->policy.writeback_work = basic_next_dirty_block; /* NULL for background policy. */
-	p->policy.next_dirty_block = basic_next_dirty_block;
+	// p->policy.next_dirty_block = basic_next_dirty_block;
 	p->policy.force_mapping = basic_force_mapping;
 	p->policy.residency = basic_residency;
 	p->policy.tick = NULL;
