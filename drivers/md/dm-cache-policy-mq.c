@@ -1342,7 +1342,8 @@ static struct dm_cache_policy_type default_policy_type = {
 	.version = {1, 0, 0},
 	.hint_size = 4,
 	.owner = THIS_MODULE,
-	.create = mq_create
+	.create = mq_create,
+	.shim = false
 };
 
 static int __init mq_init(void)

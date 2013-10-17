@@ -74,9 +74,8 @@ static struct dm_cache_policy *stack_root_create(const char *policy_stack_str,
 	struct dm_cache_policy_type *t;
 	const unsigned *version;
 	const char *seg_name;
-	int cannonical_name_len;
-	int seg_name_len;
-	int hint_size;
+	size_t cannonical_name_len;
+	size_t hint_size;
 	int i;
 
 	if (!p)
@@ -100,23 +99,24 @@ static struct dm_cache_policy *stack_root_create(const char *policy_stack_str,
 	cannonical_name_len = 0;
 	for (child = head; child; child = child->child) {
 		hint_size = dm_cache_policy_get_hint_size(child);
-		if (!hint_size && (child->child != NULL))
+		if (!hint_size && child->child)
 			continue;
 
 		t->hint_size += hint_size;
 
 		seg_name = dm_cache_policy_get_name(child);
-		seg_name_len = strlen(seg_name);
+		cannonical_name_len += strlen(seg_name) + dm_cache_is_shim_policy(child) ? 1 : 0;
 
-		if (cannonical_name_len + seg_name_len >= sizeof(t->name)) {
-			DMWARN("policy stack string '%s' is too long",
-			       policy_stack_str);
-			kfree(p);
-			return NULL;
+		if (cannonical_name_len >= sizeof(t->name))
+			goto err_length;
+
+		strcat(t->name, seg_name);
+
+		if (dm_cache_is_shim_policy(child)) {
+			t->name[cannonical_name_len - 1] = DM_CACHE_POLICY_STACK_DELIM;
+			t->name[cannonical_name_len] = '\0';
 		}
 
-		strcpy(&t->name[cannonical_name_len], seg_name);
-		cannonical_name_len += seg_name_len;
 		version = dm_cache_policy_get_version(child);
 
 		for (i = 0; i < CACHE_POLICY_VERSION_SIZE; i++)
@@ -125,6 +125,12 @@ static struct dm_cache_policy *stack_root_create(const char *policy_stack_str,
 
 	p->policy.private = t;
 	return &p->policy;
+
+err_length:
+	DMWARN("policy stack string '%s' is too long",
+	       policy_stack_str);
+	kfree(p);
+	return NULL;
 }
 
 static void stack_root_destroy(struct dm_cache_policy *p)
@@ -179,15 +185,13 @@ dm_cache_stack_utils_policy_stack_create(const char *policy_stack_str,
 		return NULL;
 	}
 
-	policy_name = &policy_name_buf[0];
+	policy_name = policy_name_buf;
 	p = head_p = next_p = NULL;
 
 	do {
 		delim = strchr(policy_name, DM_CACHE_POLICY_STACK_DELIM);
-		if (delim) {
-			saved_char = delim[1];
-			delim[1] = '\0';
-		}
+		if (delim)
+			*delim = '\0';
 
 		next_p = dm_cache_policy_create(policy_name, cache_size,
 						origin_size, cache_block_size);
@@ -195,15 +199,17 @@ dm_cache_stack_utils_policy_stack_create(const char *policy_stack_str,
 			goto cleanup;
 
 		next_p->child = NULL;
-		if (p)
-			p->child = next_p;
-		else
-			head_p = next_p;
+		*(p ? &p->child : &head_p) = next_p;
 		p = next_p;
 
 		if (delim) {
-			delim[1] = saved_char;
-			policy_name = &delim[1];
+			if (!dm_cache_is_shim_policy(next_p)) {
+				DMERR("%s is no shim policy", policy_name);
+				goto cleanup;
+			}
+
+			*delim = DM_CACHE_POLICY_STACK_DELIM;
+			policy_name = delim + 1;
 		}
 	} while (delim);
 
@@ -213,7 +219,7 @@ dm_cache_stack_utils_policy_stack_create(const char *policy_stack_str,
 			goto cleanup;
 
 		head_p = next_p;
-	}
+	} /* FIXME: else bail out? */
 
 	return head_p;
 

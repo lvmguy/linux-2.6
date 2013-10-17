@@ -223,11 +223,12 @@ static struct dm_cache_policy *trc_create(dm_cblock_t cache_size,
 /*----------------------------------------------------------------*/
 
 static struct dm_cache_policy_type trc_policy_type = {
-	.name = "trc+",
+	.name = "trc",
 	.version = {1, 0, 0},
 	.hint_size = 0,
 	.owner = THIS_MODULE,
-	.create = trc_create
+	.create = trc_create,
+	.shim = true
 };
 
 static int __init trc_init(void)

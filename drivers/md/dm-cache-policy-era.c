@@ -31,7 +31,7 @@
 
 #define	DEBUG_ERA	0
 
-#define DM_MSG_PREFIX "cache-policy-era+"
+#define DM_MSG_PREFIX "cache-policy-era"
 
 typedef uint32_t era_t;
 #define ERA_MAX_ERA UINT_MAX
@@ -500,11 +500,12 @@ static struct dm_cache_policy *era_create(dm_cblock_t cache_size,
 /*----------------------------------------------------------------*/
 
 static struct dm_cache_policy_type era_policy_type = {
-	.name = "era+",
+	.name = "era",
 	.version = {1, 0, 0},
 	.hint_size = 4,
 	.owner = THIS_MODULE,
-	.create = era_create
+	.create = era_create,
+	.shim = true
 };
 
 static int __init era_init(void)
@@ -536,4 +537,4 @@ module_exit(era_exit);
 
 MODULE_AUTHOR("Morgan Mears <dm-devel@redhat.com>");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("era+ cache policy shim");
+MODULE_DESCRIPTION("era cache policy shim");

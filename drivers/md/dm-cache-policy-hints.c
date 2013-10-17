@@ -727,7 +727,8 @@ static struct dm_cache_policy_type hints_policy_type = {
 	.version = {1, 0, 0},
 	.hint_size = DEFAULT_HINT_SIZE,
 	.owner = THIS_MODULE,
-	.create = hints_policy_create
+	.create = hints_policy_create,
+	.shim = false
 };
 
 static int __init hints_init(void)
