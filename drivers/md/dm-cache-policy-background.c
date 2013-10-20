@@ -1,265 +1,216 @@
 /*
  * Copyright (C) 2013 Red Hat. All rights reserved.
  *
- * Stackable background write cache replacement policy module.
+ * Shim background write cache replacement policy module.
+ *
+ * Confgure on top of any policy supporting the writeback_work method.
  *
  * This file is released under the GPL.
  */
 
 #include "dm-cache-policy.h"
 #include "dm-cache-policy-internal.h"
+#include "dm-cache-shim-utils.h"
 #include "dm.h"
 
 #include <linux/module.h>
 #include <linux/moduleparam.h>
 
-#define	LLU	long long unsigned
+#define DM_MSG_PREFIX	"cache-policy-background" 
+
+#define	DEFAULT_CLEAN_POOL_SIZE	100
 
 /*----------------------------------------------------------------*/
 
-struct policy {
+struct background_policy {
 	struct dm_cache_policy policy;
-	struct dm_cache_policy *real_policy;
 
-	dm_cblock_t threshold;
+	dm_cblock_t cache_size;
 
-	dm_cblock_t cache_blocks;
-	sector_t origin_sectors;
-	sector_t block_sectors;
+	unsigned clean_pool_size;
+	atomic_t dirty_cblocks;
 };
 
 /*----------------------------------------------------------------------------*/
 /* Low-level functions. */
-static struct policy *to_policy(struct dm_cache_policy *pe)
+static struct background_policy *to_bg_policy(struct dm_cache_policy *p)
 {
-	return container_of(pe, struct policy, policy);
+	return container_of(p, struct background_policy, policy);
 }
 
 /*----------------------------------------------------------------------------*/
 
 /* Public interface (see dm-cache-policy.h */
-static void background_destroy(struct dm_cache_policy *pe)
+static void background_destroy(struct dm_cache_policy *p)
 {
-	struct policy *p = to_policy(pe);
+	struct background_policy *bg = to_bg_policy(p);
 
-	if (p->real_policy)
-		dm_cache_policy_destroy(p->real_policy);
-
-	kfree(p);
+	kfree(bg);
 }
 
-static int background_map(struct dm_cache_policy *pe, dm_oblock_t oblock,
-		     bool can_block, bool can_migrate, bool discarded_oblock,
-		     struct bio *bio, struct policy_result *result)
+static int background_set_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 {
-	struct policy *p = to_policy(pe);
+	struct background_policy *bg = to_bg_policy(p);
+	int r = policy_set_dirty(p->child, oblock);
 
-	return p->real_policy ? policy_map(p->real_policy, oblock, can_block, can_migrate,
-					   discarded_oblock, bio, result) : 0;
-}
-
-static int background_lookup(struct dm_cache_policy *pe, dm_oblock_t oblock, dm_cblock_t *cblock)
-{
-	struct policy *p = to_policy(pe);
-
-	return p->real_policy ? policy_lookup(p->real_policy, oblock, cblock) : 0;
-}
-
-static int background_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
-{
-	int r = -EOPNOTSUPP;
-	struct policy *p = to_policy(pe);
-
-	if (p->real_policy) {
-		r = policy_set_dirty(p->real_policy, oblock);
-		if (r < 0) {
-			BUG_ON(r != -ENOENT);
-			r = 0;
-		}
-	}
+	if (!r)
+		atomic_inc(&bg->dirty_cblocks);
 
 	return r;
 }
 
-static int background_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
+static int background_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 {
-	int r = -EOPNOTSUPP;
-	struct policy *p = to_policy(pe);
+	struct background_policy *bg = to_bg_policy(p);
+	int r = policy_clear_dirty(p->child, oblock);
 
-	if (p->real_policy) {
-		r = policy_clear_dirty(p->real_policy, oblock);
-		if (r < 0) {
-			BUG_ON(r != -ENOENT);
-			r = 0;
-		}
-	}
+	if (!r)
+		atomic_dec(&bg->dirty_cblocks);
 
 	return r;
 }
 
-static int background_load_mapping(struct dm_cache_policy *pe,
-				   dm_oblock_t oblock, dm_cblock_t cblock,
-				   void *hint, bool hint_valid)
+static void background_force_mapping(struct dm_cache_policy *p,
+				     dm_oblock_t current_oblock, dm_oblock_t new_oblock)
 {
-	struct policy *p = to_policy(pe);
+	struct background_policy *bg = to_bg_policy(p);
 
-	return p->real_policy ? policy_load_mapping(p->real_policy, oblock, cblock, hint, hint_valid) :
-				-EOPNOTSUPP;
+	policy_force_mapping(p->child, current_oblock, new_oblock);
+	atomic_inc(&bg->dirty_cblocks);
 }
 
-static int background_walk_mappings(struct dm_cache_policy *pe, policy_walk_fn fn, void *context)
-{
-	struct policy *p = to_policy(pe);
-
-	return p->real_policy ? policy_walk_mappings(p->real_policy, fn, context) : 0;
-}
-
-static void background_remove_mapping(struct dm_cache_policy *pe, dm_oblock_t oblock)
-{
-	struct policy *p = to_policy(pe);
-
-	if (p->real_policy)
-		policy_remove_mapping(p->real_policy, oblock);
-}
-
-static void background_force_mapping(struct dm_cache_policy *pe,
-				     dm_oblock_t current_oblock, dm_oblock_t oblock)
-{
-	struct policy *p = to_policy(pe);
-
-	if (p->real_policy)
-		policy_force_mapping(p->real_policy, current_oblock, oblock);
-}
-
-static int background_writeback_work(struct dm_cache_policy *pe,
+static int background_writeback_work(struct dm_cache_policy *p,
 				     dm_oblock_t *oblock, dm_cblock_t *cblock)
 {
-	return -ENOENT; // policy_next_dirty_block(to_policy(pe)->real_policy, oblock, cblock);
-}
+	int r = -ENODATA;
+	struct background_policy *bg = to_bg_policy(p);
 
-static dm_cblock_t background_residency(struct dm_cache_policy *pe)
-{
-	struct policy *p = to_policy(pe);
+	smp_rmb();
+	if (from_cblock(bg->cache_size) - atomic_read(&bg->dirty_cblocks) < bg->clean_pool_size)
+		r = policy_writeback_work(p->child, oblock, cblock);
 
-	return p->real_policy ? policy_residency(to_policy(pe)->real_policy) : 0;
-}
+	if (!r)
+		atomic_dec(&bg->dirty_cblocks);
 
-static void background_tick(struct dm_cache_policy *pe)
-{
-	policy_tick(to_policy(pe)->real_policy);
+	return r;
 }
 
 static const char *clean_block_str = "clean_block_pool_size";
-static const char *policy_str = "policy";
 
-static int background_emit_config_values(struct dm_cache_policy *pe, char *result, unsigned maxlen)
+static int background_emit_config_values(struct dm_cache_policy *p, char *result, unsigned maxlen)
 {
 	ssize_t sz = 0;
-	struct policy *p = to_policy(pe);
+	struct background_policy *bg = to_bg_policy(p);
 
-	DMEMIT("4 %s %u %s %s ",
-	       clean_block_str,  p->threshold,
-	       policy_str, dm_cache_policy_get_name(p->real_policy));
+	/* FIXME: REMOVEME: 3rd config value 'dirty_cblocks'. */
+	DMEMIT("2 %s %u *%d* ", clean_block_str, bg->clean_pool_size, atomic_read(&bg->dirty_cblocks));
 
-	return sz < maxlen ? policy_emit_config_values(to_policy(pe)->real_policy, result + sz, maxlen - sz) : 0;
+	return sz < maxlen ? policy_emit_config_values(p->child, result + sz, maxlen - sz) : 0;
 }
 
-static void init_policy_functions(struct policy *p, bool create);
-
-static int background_set_config_value(struct dm_cache_policy *pe,
+static int background_set_config_value(struct dm_cache_policy *p,
 				       const char *key, const char *value)
 {
-	struct policy *p = to_policy(pe);
+	struct background_policy *bg = to_bg_policy(p);
 
 	if (!strcasecmp(key, clean_block_str)) {
 		unsigned long tmp;
 
 		if (kstrtoul(value, 10, &tmp) ||
-		    tmp > from_cblock(p->cache_blocks))
+		    tmp > from_cblock(bg->cache_size))
 			return -EINVAL;
 
-		p->threshold = to_cblock(tmp);
-
-	} else if (!strcasecmp(key, policy_str)) {
-		if (p->real_policy)
-			return -EPERM;
-
-		p->real_policy = dm_cache_policy_create(value, p->cache_blocks,
-							p->origin_sectors, p->block_sectors);
-		if (!p->real_policy)
-			return -ENOMEM;
-
-		init_policy_functions(p, false);
+		bg->clean_pool_size = tmp;
+		smp_wmb();
 
 	} else
-		return p->real_policy ? policy_set_config_value(p->real_policy, key, value) : -EINVAL;
+		return policy_set_config_value(p->child, key, value);
 
 	return 0;
 }
 
 /* Init the policy plugin interface function pointers. */
-static void init_policy_functions(struct policy *p, bool create)
+static void init_policy_functions(struct background_policy *bg)
 {
-	if (create) {
-		p->policy.destroy = background_destroy;
-		p->policy.map = background_map;
-		p->policy.lookup = background_lookup;
-		p->policy.load_mapping = background_load_mapping;
-		// p->policy.next_dirty_block = NULL;
-		p->policy.remove_mapping = background_remove_mapping;
-		p->policy.force_mapping = background_force_mapping;
-		p->policy.residency = background_residency;
-		p->policy.set_config_value = background_set_config_value;
-
-	} else {
-		/* These have NULL checks in the interface inlines. */
-		p->policy.set_dirty = background_set_dirty;
-		p->policy.clear_dirty = background_clear_dirty;
-		p->policy.walk_mappings = background_walk_mappings;
-		p->policy.writeback_work = background_writeback_work;
-		p->policy.tick = background_tick;
-		p->policy.emit_config_values = background_emit_config_values;
-	}
+	dm_cache_shim_utils_init_shim_policy(&bg->policy);
+	bg->policy.destroy = background_destroy;
+	bg->policy.set_dirty = background_set_dirty;
+	bg->policy.clear_dirty = background_clear_dirty;
+	// bg->policy.remove_mapping = background_remove_mapping;
+	bg->policy.force_mapping = background_force_mapping;
+	bg->policy.writeback_work = background_writeback_work;
+	bg->policy.emit_config_values = background_emit_config_values;
+	bg->policy.set_config_value = background_set_config_value;
 }
 
-static struct dm_cache_policy *background_create(dm_cblock_t cache_blocks,
+static struct dm_cache_policy *background_create(dm_cblock_t cache_size,
 						 sector_t origin_sectors,
 						 sector_t block_sectors)
 {
-	struct policy *p = kzalloc(sizeof(*p), GFP_KERNEL);
+	struct background_policy *bg = kzalloc(sizeof(*bg), GFP_KERNEL);
 
-	if (!p)
+	if (!bg)
 		return NULL;
 
-	init_policy_functions(p, true);
-	p->threshold = 0;
-	p->cache_blocks = cache_blocks;
+	init_policy_functions(bg);
+	bg->cache_size = cache_size;
+	bg->clean_pool_size = DEFAULT_CLEAN_POOL_SIZE;
+	atomic_set(&bg->dirty_cblocks, 0);
 
-	/* Save for set_config_value() stacked policy creation. */
-	p->origin_sectors = origin_sectors;
-	p->block_sectors = block_sectors;
-
-	return &p->policy;
+	return &bg->policy;
 }
 
 /*----------------------------------------------------------------------------*/
 
 static struct dm_cache_policy_type background_policy_type = {
 	.name = "background",
-	.owner = THIS_MODULE,
 	.version = {1, 0, 0},
+	.hint_size = 0,
+	.owner = THIS_MODULE,
         .create = background_create,
-	.shim = false /* FIXME: has to change when coded as a shim policy! */
+	.shim = true
+};
+
+static struct dm_cache_policy_type bg_policy_type = {
+	.name = "bg",
+	.version = {1, 0, 0},
+	.hint_size = 0,
+	.owner = THIS_MODULE,
+        .create = background_create,
+	.shim = true
 };
 
 static int __init background_init(void)
 {
-	return dm_cache_policy_register(&background_policy_type);
+	struct dm_cache_policy_type *t = &bg_policy_type;
+	int r = dm_cache_policy_register(t);
+
+	if (r)
+		goto err;
+
+	t = &background_policy_type;
+	r = dm_cache_policy_register(t);
+	if (r)
+		goto err_unregister_bg;
+
+	DMINFO("version %u.%u.%u loaded",
+	       background_policy_type.version[0],
+	       background_policy_type.version[1],
+	       background_policy_type.version[2]);
+
+	return 0;
+
+err_unregister_bg:
+	dm_cache_policy_unregister(&bg_policy_type);
+err:
+	DMERR("register failed %d as '%s'", r, t->name);
+	return r;
 }
 
 static void __exit background_exit(void)
 {
 	dm_cache_policy_unregister(&background_policy_type);
+	dm_cache_policy_unregister(&bg_policy_type);
 }
 
 module_init(background_init);
@@ -267,6 +218,7 @@ module_exit(background_exit);
 
 MODULE_AUTHOR("Heinz Mauelshagen");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("stackable background write cache replacement policy");
+MODULE_DESCRIPTION("background write cache policy shim");
 
+MODULE_ALIAS("dm-cache-bg");
 /*----------------------------------------------------------------------------*/
