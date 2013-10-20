@@ -221,7 +221,6 @@ bool dm_cache_is_shim_policy(struct dm_cache_policy *p)
 
 	return t->shim;
 }
-
 EXPORT_SYMBOL_GPL(dm_cache_is_shim_policy);
 
 /*----------------------------------------------------------------*/
