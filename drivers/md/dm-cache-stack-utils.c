@@ -20,9 +20,9 @@
 #include "dm-cache-policy.h"
 #include "dm.h"
 
-#include <linux/slab.h>
-
 #include <linux/delay.h>
+#include <linux/slab.h>
+#include <linux/string.h>
 
 #define DM_MSG_PREFIX "cache-stack-utils"
 
@@ -74,8 +74,7 @@ static struct dm_cache_policy *stack_root_create(const char *policy_stack_str,
 	struct dm_cache_policy_type *t;
 	const unsigned *version;
 	const char *seg_name;
-	size_t cannonical_name_len;
-	size_t hint_size;
+	size_t canonical_name_len, hint_size;
 	int i;
 
 	if (!p)
@@ -87,7 +86,7 @@ static struct dm_cache_policy *stack_root_create(const char *policy_stack_str,
 	p->policy.child = head;
 
 	/*
-	 * We compose the cannonical name for this policy stack by removing
+	 * We compose the canonical name for this policy stack by removing
 	 * any shim policies that do not have hint data.  This is intended
 	 * to allow for a class of shim policies that can be inserted into,
 	 * or removed from, the policy stack without causing the in-flash
@@ -96,25 +95,29 @@ static struct dm_cache_policy *stack_root_create(const char *policy_stack_str,
 	 * The composite version numbers of a policy stack do not include the
 	 * versions of the hintless policies for the same reason.
 	 */
-	cannonical_name_len = 0;
+	canonical_name_len = 0;
 	for (child = head; child; child = child->child) {
 		hint_size = dm_cache_policy_get_hint_size(child);
+
+#if 0
+		/* FIXME: avoids policy name in t->name, thus leaving an non-destroyable stack. */
 		if (!hint_size && child->child)
 			continue;
+#endif
 
 		t->hint_size += hint_size;
 
 		seg_name = dm_cache_policy_get_name(child);
-		cannonical_name_len += strlen(seg_name) + dm_cache_is_shim_policy(child) ? 1 : 0;
+		canonical_name_len += strlen(seg_name) + (dm_cache_is_shim_policy(child) ? 1 : 0);
 
-		if (cannonical_name_len >= sizeof(t->name))
+		if (canonical_name_len >= sizeof(t->name))
 			goto err_length;
 
 		strcat(t->name, seg_name);
 
 		if (dm_cache_is_shim_policy(child)) {
-			t->name[cannonical_name_len - 1] = DM_CACHE_POLICY_STACK_DELIM;
-			t->name[cannonical_name_len] = '\0';
+			t->name[canonical_name_len - 1] = DM_CACHE_POLICY_STACK_DELIM;
+			t->name[canonical_name_len] = '\0';
 		}
 
 		version = dm_cache_policy_get_version(child);
@@ -219,7 +222,7 @@ dm_cache_stack_utils_policy_stack_create(const char *policy_stack_str,
 			goto cleanup;
 
 		head_p = next_p;
-	} /* FIXME: else bail out? */
+	}
 
 	return head_p;
 
