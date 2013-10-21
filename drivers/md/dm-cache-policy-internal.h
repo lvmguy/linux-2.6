@@ -128,6 +128,7 @@ int    dm_cache_policy_set_hint_size(struct dm_cache_policy *p, unsigned hint_si
 size_t dm_cache_policy_get_hint_size(struct dm_cache_policy *p);
 
 /* Return bool to tell the shim, ie. stackable only nature of a cache policy */
+#define	CACHE_POLICY_SHIM_FLAG	(1 << 0)
 bool dm_cache_is_shim_policy(struct dm_cache_policy *p);
 
 /*----------------------------------------------------------------*/

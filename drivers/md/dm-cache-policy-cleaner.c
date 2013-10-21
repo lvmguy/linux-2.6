@@ -441,7 +441,7 @@ static struct dm_cache_policy_type wb_policy_type = {
 	.hint_size = 0,
 	.owner = THIS_MODULE,
 	.create = wb_create,
-	.shim = false /* FIXME: bit field */
+	.flags = 0
 };
 
 static int __init wb_init(void)

@@ -234,8 +234,6 @@ struct dm_cache_policy_type {
 	char name[CACHE_POLICY_NAME_SIZE];
 	unsigned version[CACHE_POLICY_VERSION_SIZE];
 
-	bool shim:1;
-
 	/*
 	 * Policies may store a hint for each cache block.
 	 * Currently the size of this hint must be <=
@@ -247,6 +245,7 @@ struct dm_cache_policy_type {
 	struct dm_cache_policy *(*create)(dm_cblock_t cache_size,
 					  sector_t origin_size,
 					  sector_t block_size);
+	unsigned long flags;
 };
 
 int dm_cache_policy_register(struct dm_cache_policy_type *type);

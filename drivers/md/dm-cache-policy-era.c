@@ -505,7 +505,7 @@ static struct dm_cache_policy_type era_policy_type = {
 	.hint_size = 4,
 	.owner = THIS_MODULE,
 	.create = era_create,
-	.shim = true /* FIXME: bit field */
+	.flags = CACHE_POLICY_SHIM_FLAG
 };
 
 static int __init era_init(void)

@@ -5,7 +5,10 @@
  *
  * TESTING! NOT FOR PRODUCTION USE!
  *
- * "hints" cache replacement policy to test variable hint size.
+ * SHim "hints" cache replacement policy to test variable hint size.
+ *
+ * Stackable on any other policy.
+ *
  */
 
 #include "dm.h"
@@ -34,18 +37,18 @@ struct hints_policy {
 };
 
 /*----------------------------------------------------------------------------*/
-static struct hints_policy *to_policy(struct dm_cache_policy *ext)
+static struct hints_policy *to_policy(struct dm_cache_policy *p)
 {
-	return container_of(ext, struct hints_policy, policy);
+	return container_of(p, struct hints_policy, policy);
 }
 
 /*----------------------------------------------------------------*/
 
-static void hints_destroy(struct dm_cache_policy *ext)
+static void hints_destroy(struct dm_cache_policy *p)
 {
-	struct hints_policy *p = to_policy(ext);
+	struct hints_policy *hp = to_policy(p);
 
-	kfree(p);
+	kfree(hp);
 }
 
 /*----------------------------------------------------------------------------*/
@@ -92,35 +95,35 @@ HINTS_XFER(32)
 HINTS_XFER(16)
 HINTS_XFER(8)
 
-static void calc_hint_value_counters(struct hints_policy *p)
+static void calc_hint_value_counters(struct hints_policy *hp)
 {
-	unsigned div, rest = dm_cache_policy_get_hint_size(&p->policy), u;
+	unsigned div, rest = dm_cache_policy_get_hint_size(&hp->policy), u;
 
 	for (u = 3, div = sizeof(uint64_t); rest; u--, div >>= 1) {
-		p->hint_counter[u] = rest / div;
-		rest -= p->hint_counter[u] * div;
+		hp->hint_counter[u] = rest / div;
+		rest -= hp->hint_counter[u] * div;
 	}
 }
 
 /* Macro to set hint ptr for width on LHS based on RHS width<<1 */
 #define PTR_INC(lhs, rhs, c) \
-	inc = 2 * p->hint_counter[c]; \
+	inc = 2 * hp->hint_counter[c]; \
 	ptrs->le ## lhs ## _hints = (__le ## lhs  *) ptrs->le ## rhs ## _hints + inc; \
 	ptrs->u ## lhs ## _hints  = (uint ## lhs ## _t *) ptrs->u ## rhs ## _hints  + inc;
 
-static void set_hints_ptrs(struct hints_policy *p, struct hints_ptrs *ptrs)
+static void set_hints_ptrs(struct hints_policy *hp, struct hints_ptrs *ptrs)
 {
 	unsigned inc;
 
-	ptrs->le64_hints = p->hints_buffer;
-	ptrs->u64_hints  = p->hints_buffer;
+	ptrs->le64_hints = hp->hints_buffer;
+	ptrs->u64_hints  = hp->hints_buffer;
 
 	PTR_INC(32, 64, 3)
 	PTR_INC(16, 32, 2)
 	PTR_INC(8,  16, 1)
 }
 
-static void __hints_xfer_disk(struct hints_policy *p, bool to_disk)
+static void __hints_xfer_disk(struct hints_policy *hp, bool to_disk)
 {
 	unsigned idx, u, val;
 	hints_xfer_fn_t hints_xfer_fns[] = {
@@ -133,18 +136,19 @@ static void __hints_xfer_disk(struct hints_policy *p, bool to_disk)
 	struct hints_ptrs hints_ptrs;
 
 	smp_rmb();
-	if (!p->hint_size_set) {
-		calc_hint_value_counters(p);
-		p->hint_size_set = true;
+	if (!hp->hint_size_set) {
+		hp->hint_size_set = true;
+		smp_wmb();
+		calc_hint_value_counters(hp);
 	}
 
 	/* Must happen after calc_hint_value_counters()! */
-	set_hints_ptrs(p, &hints_ptrs);
+	set_hints_ptrs(hp, &hints_ptrs);
 
 	val = 1;
 	u = ARRAY_SIZE(hints_xfer_fns);
 	while (u--) {
-		for (idx = 0; idx < p->hint_counter[u]; idx++) {
+		for (idx = 0; idx < hp->hint_counter[u]; idx++) {
 			/*
 			 * val only suitable because of 128 hint size limitation.
 			 *
@@ -161,29 +165,29 @@ static void __hints_xfer_disk(struct hints_policy *p, bool to_disk)
 	return;
 }
 
-static void hints_preset_and_to_disk(struct hints_policy *p)
+static void hints_preset_and_to_disk(struct hints_policy *hp)
 {
-	__hints_xfer_disk(p, true);
+	__hints_xfer_disk(hp, true);
 }
 
-static void hints_from_disk_and_check(struct hints_policy *p)
+static void hints_from_disk_and_check(struct hints_policy *hp)
 {
-	__hints_xfer_disk(p, false);
+	__hints_xfer_disk(hp, false);
 }
 
-static int hints_load_mapping(struct dm_cache_policy *ext,
+static int hints_load_mapping(struct dm_cache_policy *p,
 			      dm_oblock_t oblock, dm_cblock_t cblock,
 			      void *hint, bool hint_valid)
 {
-	struct hints_policy *p = to_policy(ext);
-	int r = policy_load_mapping(ext->child, oblock, cblock, hint + dm_cache_policy_get_hint_size(ext), hint_valid);
+	struct hints_policy *hp = to_policy(p);
+	int r = policy_load_mapping(p->child, oblock, cblock, hint + dm_cache_policy_get_hint_size(p), hint_valid);
 
 	if (!r && hint_valid) {
-		void *tmp = p->hints_buffer;
+		void *tmp = hp->hints_buffer;
 
-		p->hints_buffer = hint;
-		hints_from_disk_and_check(p);
-		p->hints_buffer = tmp;
+		hp->hints_buffer = hint;
+		hints_from_disk_and_check(hp);
+		hp->hints_buffer = tmp;
 
 	} else
 		DMWARN_LIMIT("hints for cblock=%u/oblock=%llu invalid",
@@ -196,26 +200,27 @@ static int hints_load_mapping(struct dm_cache_policy *ext,
 static void *hints_buffer_to_hint(struct shim_walk_map_ctx *ctx,
 				  dm_cblock_t cblock, dm_oblock_t oblock)
 {
-	struct hints_policy *p = to_policy(ctx->my_policy);
+	struct hints_policy *hp = to_policy(ctx->my_policy);
 
-	hints_preset_and_to_disk(p);
-	return p->hints_buffer;
+	hints_preset_and_to_disk(hp);
+	return hp->hints_buffer;
 }
 
 /* Walk mappings */
-static int hints_walk_mappings(struct dm_cache_policy *ext, policy_walk_fn fn, void *context)
+static int hints_walk_mappings(struct dm_cache_policy *p, policy_walk_fn fn, void *contp)
 {
-	return dm_cache_shim_utils_walk_map(ext, fn, context, hints_buffer_to_hint);
+	return dm_cache_shim_utils_walk_map(p, fn, contp, hints_buffer_to_hint);
 }
 
 /* Set config values. */
-static int hints_set_config_value(struct dm_cache_policy *ext,
+static int hints_set_config_value(struct dm_cache_policy *p,
 				  const char *key, const char *value)
 {
 	if (!strcasecmp(key, "hint_size")) {
-		struct hints_policy *p = to_policy(ext);
+		struct hints_policy *hp = to_policy(p);
 
-		if (p->hint_size_set)
+		smp_rmb();
+		if (hp->hint_size_set)
 			return -EPERM;
 
 		else {
@@ -225,11 +230,12 @@ static int hints_set_config_value(struct dm_cache_policy *ext,
 				return -EINVAL;
 
 			else {
-				int r = dm_cache_policy_set_hint_size(ext, tmp);
+				int r = dm_cache_policy_set_hint_size(p, tmp);
 
 				if (!r) {
-					calc_hint_value_counters(p);
-					p->hint_size_set = true;
+					hp->hint_size_set = true;
+					smp_wmb();
+					calc_hint_value_counters(hp);
 					smp_wmb();
 				}
 
@@ -238,43 +244,42 @@ static int hints_set_config_value(struct dm_cache_policy *ext,
 		}
 	}
 
-	return policy_set_config_value(ext->child, key, value);
+	return policy_set_config_value(p->child, key, value);
 }
 
 /* Emit config values. */
-static int hints_emit_config_values(struct dm_cache_policy *ext, char *result, unsigned maxlen)
+static int hints_emit_config_values(struct dm_cache_policy *p, char *result, unsigned maxlen)
 {
 	ssize_t sz = 0;
 
-	DMEMIT("2 hint_size %llu", (long long unsigned) dm_cache_policy_get_hint_size(ext));
-	return policy_emit_config_values(ext->child, result + sz, maxlen - sz);
+	DMEMIT("2 hint_size %llu", (long long unsigned) dm_cache_policy_get_hint_size(p));
+	return policy_emit_config_values(p->child, result + sz, maxlen - sz);
 }
 
-static void init_policy_functions(struct hints_policy *p)
+static void init_policy_functions(struct hints_policy *hp)
 {
-	dm_cache_shim_utils_init_shim_policy(&p->policy);
-	p->policy.destroy = hints_destroy;
-	p->policy.walk_mappings = hints_walk_mappings;
-	p->policy.load_mapping = hints_load_mapping;
-	p->policy.emit_config_values = hints_emit_config_values;
-	p->policy.set_config_value = hints_set_config_value;
+	dm_cache_shim_utils_init_shim_policy(&hp->policy);
+	hp->policy.destroy = hints_destroy;
+	hp->policy.walk_mappings = hints_walk_mappings;
+	hp->policy.load_mapping = hints_load_mapping;
+	hp->policy.emit_config_values = hints_emit_config_values;
+	hp->policy.set_config_value = hints_set_config_value;
 }
 
 static struct dm_cache_policy *hints_policy_create(dm_cblock_t cache_size,
 						   sector_t origin_size,
 						   sector_t block_size)
 {
-	int r;
-	struct hints_policy *p;
+	struct hints_policy *hp;
 
 	BUILD_BUG_ON(DEFAULT_HINT_SIZE > 2023);
 
-	p = kzalloc(sizeof(*p), GFP_KERNEL);
-	if (!p)
+	hp = kzalloc(sizeof(*hp), GFP_KERNEL);
+	if (!hp)
 		return NULL;
 
-	init_policy_functions(p);
-	return &p->policy;
+	init_policy_functions(hp);
+	return &hp->policy;
 }
 
 /*----------------------------------------------------------------------------*/
@@ -284,7 +289,7 @@ static struct dm_cache_policy_type hints_policy_type = {
 	.hint_size = DEFAULT_HINT_SIZE,
 	.owner = THIS_MODULE,
 	.create = hints_policy_create,
-	.shim = true /* FIXME: bit field */
+	.flags = CACHE_POLICY_SHIM_FLAG
 };
 
 static int __init hints_init(void)
@@ -310,4 +315,4 @@ module_exit(hints_exit);
 
 MODULE_AUTHOR("Heinz Mauelshagen <dm-devel@redhat.com>");
 MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("hint size test cache policy");
+MODULE_DESCRIPTION("hint size test cache policy shim");

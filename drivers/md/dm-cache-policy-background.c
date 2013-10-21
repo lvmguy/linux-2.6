@@ -1,7 +1,7 @@
 /*
  * Copyright (C) 2013 Red Hat. All rights reserved.
  *
- * Shim background write cache replacement policy module.
+ * Shim "background" write cache replacement policy module.
  *
  * Confgure on top of any policy supporting the writeback_work method.
  *
@@ -32,7 +32,6 @@ struct background_policy {
 };
 
 /*----------------------------------------------------------------------------*/
-/* Low-level functions. */
 static struct background_policy *to_bg_policy(struct dm_cache_policy *p)
 {
 	return container_of(p, struct background_policy, policy);
@@ -155,13 +154,15 @@ static struct dm_cache_policy *background_create(dm_cblock_t cache_size,
 						 sector_t block_sectors)
 {
 	struct background_policy *bg = kzalloc(sizeof(*bg), GFP_KERNEL);
+	unsigned cps;
 
 	if (!bg)
 		return NULL;
 
 	init_policy_functions(bg);
 	bg->cache_size = cache_size;
-	bg->clean_pool_size = DEFAULT_CLEAN_POOL_SIZE;
+	cps = from_cblock(cache_size) / 4;
+	bg->clean_pool_size = cps < DEFAULT_CLEAN_POOL_SIZE ? cps : DEFAULT_CLEAN_POOL_SIZE;
 	atomic_set(&bg->dirty_cblocks, 0);
 
 	return &bg->policy;
@@ -175,7 +176,7 @@ static struct dm_cache_policy_type bg_policy_type = {
 	.hint_size = 0,
 	.owner = THIS_MODULE,
         .create = background_create,
-	.shim = true /* FIXME: bit field */
+	.flags = CACHE_POLICY_SHIM_FLAG
 };
 
 static struct dm_cache_policy_type background_policy_type = {
@@ -184,7 +185,7 @@ static struct dm_cache_policy_type background_policy_type = {
 	.hint_size = 0,
 	.owner = THIS_MODULE,
         .create = background_create,
-	.shim = true /* FIXME: bit field */
+	.flags = CACHE_POLICY_SHIM_FLAG
 };
 
 static int __init background_init(void)

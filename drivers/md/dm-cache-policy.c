@@ -219,7 +219,7 @@ bool dm_cache_is_shim_policy(struct dm_cache_policy *p)
 {
 	struct dm_cache_policy_type *t = p->private;
 
-	return t->shim;
+	return (t->flags & CACHE_POLICY_SHIM_FLAG) ? true : false;
 }
 EXPORT_SYMBOL_GPL(dm_cache_is_shim_policy);
 

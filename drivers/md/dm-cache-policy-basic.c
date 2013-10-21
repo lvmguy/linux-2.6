@@ -1869,7 +1869,7 @@ static struct dm_cache_policy_type policy ## _policy_type = { \
 	.hint_size = hints_size, \
 	.owner = THIS_MODULE, \
 	.create = policy ## _create, \
-	.shim = false /* FIXME: bit field */ \
+	.flags = 0 \
 };
 
 #define	__CREATE_POLICY_TYPE(policy, hint_size) \

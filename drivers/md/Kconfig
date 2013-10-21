@@ -298,14 +298,14 @@ config DM_CACHE_CLEANER
          origin.  Used when decommissioning a dm-cache.
 
 config DM_CACHE_BACKGROUND
-       tristate "Stackable Background Cache Policy (EXPERIMENTAL)"
+       tristate "Background Cache Policy shim (EXPERIMENTAL)"
        depends on DM_CACHE
        default y
        ---help---
          A stackable cache policy supporting writeback of dirty blocks
 
 config DM_CACHE_BASIC
-       tristate "Basic Cache Policies (LFU,LRU,...)  (EXPERIMENTAL)"
+       tristate "Basic Cache Policies (LFU,LRU,...) (EXPERIMENTAL)"
        depends on DM_CACHE
        select BTREE
        default y
@@ -461,18 +461,27 @@ config DM_FAKE_DISCARD
        ---help---
        A target that pretends to support discard, with various parameters.
 
-config DM_CACHE_HINTS
-       tristate "Hint Size Test Cache Policy (EXPERIMENTAL)"
-       depends on DM_CACHE
+config DM_CACHE_DEBUG
+       tristate "Debug Cache Policy shim (EXPERIMENTAL)"
        depends on DM_TEST_TARGETS
+       depends on DM_CACHE
+       select BTREE
+       default y
+       ---help---
+         Shim debugging policy to stack on top of another policy
+
+config DM_CACHE_HINTS
+       tristate "Hint Size Test Cache Policy shim (EXPERIMENTAL)"
+       depends on DM_TEST_TARGETS
+       depends on DM_CACHE
        default y
        ---help---
          A dumb cache policy just for the purpose to test variable hint size
 
 config DM_CACHE_TRC
        tristate "Tracing Cache Policy shim (EXPERIMENTAL)"
-       depends on DM_CACHE
        depends on DM_TEST_TARGETS
+       depends on DM_CACHE
        default y
        ---help---
          A cache policy shim that adds debug tracing for all cache policy
