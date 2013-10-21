@@ -228,7 +228,7 @@ static struct dm_cache_policy_type trc_policy_type = {
 	.hint_size = 0,
 	.owner = THIS_MODULE,
 	.create = trc_create,
-	.shim = true
+	.shim = true /* FIXME: bit field */
 };
 
 static int __init trc_init(void)

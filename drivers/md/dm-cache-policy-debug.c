@@ -770,7 +770,7 @@ static struct dm_cache_policy_type debug_policy_type = {
 	.version = {1, 0, 0},
 	.owner = THIS_MODULE,
 	.create = debug_create,
-	.shim = false /* FIXME: has to change when coded as a shim policy. */
+	.shim = false /* FIXME: bit field + has to change when coded as a shim policy. */
 };
 
 static int __init debug_init(void)
@@ -803,5 +803,5 @@ module_param_named(verbose, modparms.verbose, uint, S_IWUSR);
 MODULE_PARM_DESC(verbose, "verbose state output");
 
 MODULE_AUTHOR("Heinz Mauelshagen <dm-devel@redhat.com>");
-MODULE_LICENSE("GPL");
-MODULE_DESCRIPTION("debug module for cache replacement policies");
+h
+ODULE_LICENSE("GPL");

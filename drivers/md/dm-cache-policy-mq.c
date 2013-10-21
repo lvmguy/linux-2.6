@@ -997,6 +997,8 @@ static int _mq_set_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock, bo
 		else
 			r = e->dirty ? 0 : -EINVAL;
 
+		// DMDEBUG_LIMIT("%s dirty=%d r=%d", __func__, set, r); /* FIXME: REMOVEME: */
+
 		e->dirty = set;
 		push(mq, e);
 	}
@@ -1030,7 +1032,7 @@ static int mq_load_mapping(struct dm_cache_policy *p,
 	e->cblock = cblock;
 	e->oblock = oblock;
 	e->in_cache = true;
-	e->dirty = true;	/* this gets corrected in a minute */
+	e->dirty = false;	/* this gets corrected in a minute but that fails background shim policy */
 	e->hit_count = hint_valid ? le32_to_cpu(*((__le32 *) hint)) : 1;
 	e->generation = mq->generation;
 	push(mq, e);
@@ -1336,7 +1338,7 @@ static struct dm_cache_policy_type default_policy_type = {
 	.hint_size = 4,
 	.owner = THIS_MODULE,
 	.create = mq_create,
-	.shim = false
+	.shim = false /* FIXME: bit field */
 };
 
 static int __init mq_init(void)

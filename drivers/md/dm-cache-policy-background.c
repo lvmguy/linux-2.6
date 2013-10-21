@@ -53,8 +53,10 @@ static int background_set_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 	struct background_policy *bg = to_bg_policy(p);
 	int r = policy_set_dirty(p->child, oblock);
 
-	if (!r)
+	if (r == 0) /* 0 -> policy has set block to dirty. */
 		atomic_inc(&bg->dirty_cblocks);
+
+	DMDEBUG_LIMIT("%s r=%d", __func__, r); /* FIXME: REMOVEME: */
 
 	return r;
 }
@@ -64,8 +66,12 @@ static int background_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 	struct background_policy *bg = to_bg_policy(p);
 	int r = policy_clear_dirty(p->child, oblock);
 
-	if (!r)
+	if (r == 0) { /* 0 -> policy has set block to clean. */
+		BUG_ON(atomic_read(&bg->dirty_cblocks) == 0);
 		atomic_dec(&bg->dirty_cblocks);
+	}
+
+	DMDEBUG_LIMIT("%s r=%d", __func__, r); /* FIXME: REMOVEME: */
 
 	return r;
 }
@@ -86,11 +92,13 @@ static int background_writeback_work(struct dm_cache_policy *p,
 	struct background_policy *bg = to_bg_policy(p);
 
 	smp_rmb();
-	if (from_cblock(bg->cache_size) - atomic_read(&bg->dirty_cblocks) < bg->clean_pool_size)
+	if (from_cblock(bg->cache_size) - atomic_read(&bg->dirty_cblocks) < bg->clean_pool_size) {
 		r = policy_writeback_work(p->child, oblock, cblock);
+		if (!r)
+			atomic_dec(&bg->dirty_cblocks);
 
-	if (!r)
-		atomic_dec(&bg->dirty_cblocks);
+		DMDEBUG_LIMIT("%s cblock=%u oblock=%llu r=%d", __func__, from_cblock(*cblock), from_oblock(*oblock), r); /* FIXME: REMOVEME: */
+	}
 
 	return r;
 }
@@ -136,7 +144,6 @@ static void init_policy_functions(struct background_policy *bg)
 	bg->policy.destroy = background_destroy;
 	bg->policy.set_dirty = background_set_dirty;
 	bg->policy.clear_dirty = background_clear_dirty;
-	// bg->policy.remove_mapping = background_remove_mapping;
 	bg->policy.force_mapping = background_force_mapping;
 	bg->policy.writeback_work = background_writeback_work;
 	bg->policy.emit_config_values = background_emit_config_values;
@@ -162,22 +169,22 @@ static struct dm_cache_policy *background_create(dm_cblock_t cache_size,
 
 /*----------------------------------------------------------------------------*/
 
-static struct dm_cache_policy_type background_policy_type = {
-	.name = "background",
-	.version = {1, 0, 0},
-	.hint_size = 0,
-	.owner = THIS_MODULE,
-        .create = background_create,
-	.shim = true
-};
-
 static struct dm_cache_policy_type bg_policy_type = {
 	.name = "bg",
 	.version = {1, 0, 0},
 	.hint_size = 0,
 	.owner = THIS_MODULE,
         .create = background_create,
-	.shim = true
+	.shim = true /* FIXME: bit field */
+};
+
+static struct dm_cache_policy_type background_policy_type = {
+	.name = "background",
+	.version = {1, 0, 0},
+	.hint_size = 0,
+	.owner = THIS_MODULE,
+        .create = background_create,
+	.shim = true /* FIXME: bit field */
 };
 
 static int __init background_init(void)

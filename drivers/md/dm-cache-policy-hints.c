@@ -284,7 +284,7 @@ static struct dm_cache_policy_type hints_policy_type = {
 	.hint_size = DEFAULT_HINT_SIZE,
 	.owner = THIS_MODULE,
 	.create = hints_policy_create,
-	.shim = true
+	.shim = true /* FIXME: bit field */
 };
 
 static int __init hints_init(void)
