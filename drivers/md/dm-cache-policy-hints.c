@@ -24,7 +24,7 @@
 
 /*----------------------------------------------------------------*/
 
-#define	DEFAULT_HINT_SIZE DM_CACHE_POLICY_MAX_HINT_SIZE
+#define	DEFAULT_HINT_SIZE DM_CACHE_POLICY_MAX_HINT_SIZE / 2
 
 struct hints_policy {
 	struct dm_cache_policy policy;
@@ -155,6 +155,8 @@ static void __hints_xfer_disk(struct hints_policy *hp, bool to_disk)
 			 * An uint8_t maxes at 255, so we could theoretically
 			 * test hint sizes up to 2023 bytes with this limitation.
 			 */
+			BUILD_BUG_ON(DM_CACHE_POLICY_MAX_HINT_SIZE > 2023);
+
 			if (hints_xfer_fns[u](&hints_ptrs, idx, val, to_disk))
 				return;
 
@@ -272,7 +274,7 @@ static struct dm_cache_policy *hints_policy_create(dm_cblock_t cache_size,
 {
 	struct hints_policy *hp;
 
-	BUILD_BUG_ON(DEFAULT_HINT_SIZE > 2023);
+	BUILD_BUG_ON(DEFAULT_HINT_SIZE > DM_CACHE_POLICY_MAX_HINT_SIZE - 16);
 
 	hp = kzalloc(sizeof(*hp), GFP_KERNEL);
 	if (!hp)
