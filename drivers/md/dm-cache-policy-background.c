@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2013 Red Hat. All rights reserved.
+ i Copyright (C) 2013 Red Hat. All rights reserved.
  *
  * Shim "background" write cache replacement policy module.
  *
@@ -55,8 +55,6 @@ static int background_set_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 	if (r == 0) /* 0 -> policy has set block to dirty. */
 		atomic_inc(&bg->dirty_cblocks);
 
-	DMDEBUG_LIMIT("%s r=%d", __func__, r); /* FIXME: REMOVEME: */
-
 	return r;
 }
 
@@ -69,8 +67,6 @@ static int background_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 		BUG_ON(atomic_read(&bg->dirty_cblocks) == 0);
 		atomic_dec(&bg->dirty_cblocks);
 	}
-
-	DMDEBUG_LIMIT("%s r=%d", __func__, r); /* FIXME: REMOVEME: */
 
 	return r;
 }
@@ -95,8 +91,6 @@ static int background_writeback_work(struct dm_cache_policy *p,
 		r = policy_writeback_work(p->child, oblock, cblock);
 		if (!r)
 			atomic_dec(&bg->dirty_cblocks);
-
-		DMDEBUG_LIMIT("%s cblock=%u oblock=%llu r=%d", __func__, from_cblock(*cblock), from_oblock(*oblock), r); /* FIXME: REMOVEME: */
 	}
 
 	return r;
@@ -123,7 +117,10 @@ static int background_set_config_value(struct dm_cache_policy *p,
 	if (!strcasecmp(key, clean_block_str)) {
 		unsigned long tmp;
 
-		if (kstrtoul(value, 10, &tmp) ||
+		if (!strcasecmp(value, "max"))
+			tmp = from_cblock(bg->cache_size);
+
+		else if (kstrtoul(value, 10, &tmp) ||
 		    tmp > from_cblock(bg->cache_size))
 			return -EINVAL;
 
@@ -176,7 +173,7 @@ static struct dm_cache_policy_type bg_policy_type = {
 	.hint_size = 0,
 	.owner = THIS_MODULE,
         .create = background_create,
-	.flags = CACHE_POLICY_SHIM_FLAG
+	.features = DM_CACHE_POLICY_SHIM
 };
 
 static struct dm_cache_policy_type background_policy_type = {
@@ -185,7 +182,7 @@ static struct dm_cache_policy_type background_policy_type = {
 	.hint_size = 0,
 	.owner = THIS_MODULE,
         .create = background_create,
-	.flags = CACHE_POLICY_SHIM_FLAG
+	.features = DM_CACHE_POLICY_SHIM
 };
 
 static int __init background_init(void)
