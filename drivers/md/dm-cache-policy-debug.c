@@ -401,7 +401,7 @@ static void analyse_map_result(struct debug_policy *debug, dm_oblock_t oblock,
 
 static void log_stats(struct debug_policy *debug)
 {
-	if (++debug->hit > (from_cblock(debug->cache_size) << 1)) {
+	if (debug->hit++ > (from_cblock(debug->cache_size) << 1)) {
 		debug->hit = 0;
 		DMINFO("%s nr_dblocks_allocated/analysed = %u/%u good/bad hit=%u/%u,miss=%u/%u,map_miss=%u/%u,new=%u/%u,replace=%u/%u,op=%u/%u,"
 		       "lookup=%u/%u,set_dirty=%u/%u,clear_dirty=%u/%u,"
@@ -486,16 +486,32 @@ static int debug_lookup(struct dm_cache_policy *p, dm_oblock_t oblock, dm_cblock
 	return r;
 }
 
-static void analyze_set_clear_dirty(struct dm_cache_policy *p, bool dirty, int r)
+static void analyze_set_clear_dirty(struct dm_cache_policy *p,
+				    bool dirty, int r, dm_oblock_t oblock)
 {
 	struct debug_policy *debug = to_debug_policy(p);
 	const char *name = dm_cache_policy_get_name(p->child);
+	struct debug_entry *eo;
+
+	mutex_lock(&debug->lock);
+	eo = lookup_debug_entry_by_origin_block(debug, oblock);
+	mutex_unlock(&debug->lock);
+
+	BUG_ON(!eo);
+	BUG_ON(eo->oblock != oblock);
 
 	switch (r) {
 	case 0:
 	case 1:
+	case -ENOENT:
 	case -EOPNOTSUPP:
 		dirty ? debug->good.dirty++ : debug->good.clean++;
+		break;
+
+	case -EINVAL:
+		DMWARN("%s->%s_dirty no state change on cblock=%u/oblock=%llu [%d]",
+		       name, dirty ? "set" : "clear", eo->cblock, oblock, r);
+		dirty ? debug->bad.dirty++ : debug->bad.clean++;
 		break;
 
 	default:
@@ -508,7 +524,7 @@ static int debug_set_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 {
 	int r = policy_set_dirty(p->child, oblock);
 
-	analyze_set_clear_dirty(p, true, r);
+	analyze_set_clear_dirty(p, true, r, oblock);
 	return r;
 }
 
@@ -516,7 +532,7 @@ static int debug_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 {
 	int r = policy_clear_dirty(p->child, oblock);
 
-	analyze_set_clear_dirty(p, false, r);
+	analyze_set_clear_dirty(p, false, r, oblock);
 	return r;
 }
 
@@ -525,7 +541,7 @@ static void debug_destroy(struct dm_cache_policy *p)
 {
 	struct debug_policy *debug = to_debug_policy(p);
 
-	debug->hit = ~0 - 1; /* - 1 due to ++ in log_stats() */
+	debug->hit = ~0U;
 	log_stats(debug);
 
 	DMINFO("Test %s", test_ok(debug) ? "ok" : "FAILED");
@@ -642,16 +658,13 @@ static void analyze_wb_im_result(struct debug_policy *debug, bool writeback_work
 		}
 
 	} else {
-		struct debug_entry *ec, *eo;
+		struct debug_entry *ec;
 
 		mutex_lock(&debug->lock);
 		ec = lookup_debug_entry_by_cache_block(debug, *cblock);
-		eo = lookup_debug_entry_by_origin_block(debug, *oblock);
-		WARN_ON(!ec);
-		WARN_ON(!eo);
-		ec = ec ? ec : eo;
-		if (ec)
-			remove_debug_entry(debug, ec);
+		if (!ec)
+			DMWARN("%s->%s cblock=%u/oblock=%llu unknown to debug", name, caller,
+			       from_cblock(*cblock), from_oblock(*oblock));
 		mutex_unlock(&debug->lock);
 
 		if (from_cblock(*cblock) >= from_cblock(debug->cache_size)) {
