@@ -449,12 +449,13 @@ static int __open_metadata(struct dm_cache_metadata *cmd)
 		goto bad;
 	}
 
-	// we need to set the hint size before calling
-	// __setup_mapping_info()
+	/*
+	 * We need to set the hint size before calling __setup_mapping_info()
+	 */
 	if (using_variable_size_hints(disk_super))
 		cmd->policy_hint_size = le32_to_cpu(disk_super->policy_hint_size);
 	else
-		cmd->policy_hint_size = 4u;
+		cmd->policy_hint_size = DM_CACHE_POLICY_DEF_HINT_SIZE;
 
 	r = __setup_mapping_info(cmd);
 	if (r < 0)
@@ -550,8 +551,13 @@ static void read_superblock_fields(struct dm_cache_metadata *cmd,
 
 	if (using_variable_size_hints(disk_super))
 		cmd->policy_hint_size = le32_to_cpu(disk_super->policy_hint_size);
-	else
-		cmd->policy_hint_size = 4u;
+	else {
+		/*
+		 * Must establish policy_hint_size because older superblock
+		 * wouldn't have it.
+		 */
+		cmd->policy_hint_size = DM_CACHE_POLICY_DEF_HINT_SIZE;
+	}
 
 	cmd->stats.read_hits = le32_to_cpu(disk_super->read_hits);
 	cmd->stats.read_misses = le32_to_cpu(disk_super->read_misses);
@@ -649,7 +655,7 @@ static int __commit_transaction(struct dm_cache_metadata *cmd,
 	disk_super->policy_version[1] = cpu_to_le32(cmd->policy_version[1]);
 	disk_super->policy_version[2] = cpu_to_le32(cmd->policy_version[2]);
 
-	if (cmd->policy_hint_size != 4) {
+	if (cmd->policy_hint_size != DM_CACHE_POLICY_DEF_HINT_SIZE) {
 		unsigned long iflags = 0;
 		set_bit(DM_CACHE_VARIABLE_HINT_SIZE, &iflags);
 		disk_super->incompat_flags = cpu_to_le32(iflags);

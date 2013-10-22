@@ -841,7 +841,7 @@ static struct dm_cache_policy_type dbg_policy_type = {
 	.version = {1, 0, 0},
 	.owner = THIS_MODULE,
 	.create = debug_create,
-	.flags = CACHE_POLICY_SHIM_FLAG
+	.features = DM_CACHE_POLICY_SHIM
 };
 
 static struct dm_cache_policy_type debug_policy_type = {
@@ -849,7 +849,7 @@ static struct dm_cache_policy_type debug_policy_type = {
 	.version = {1, 0, 0},
 	.owner = THIS_MODULE,
 	.create = debug_create,
-	.flags = CACHE_POLICY_SHIM_FLAG
+	.features = DM_CACHE_POLICY_SHIM
 };
 
 static int __init debug_init(void)

@@ -171,7 +171,6 @@ void dm_cache_policy_destroy(struct dm_cache_policy *p)
 
 	if (dm_cache_stack_utils_string_is_policy_stack(t->name))
 		dm_cache_stack_utils_policy_stack_destroy(p);
-
 	else {
 		p->destroy(p);
 		put_policy(t);
@@ -215,12 +214,12 @@ int dm_cache_policy_set_hint_size(struct dm_cache_policy *p, unsigned hint_size)
 }
 EXPORT_SYMBOL_GPL(dm_cache_policy_set_hint_size);
 
-bool dm_cache_is_shim_policy(struct dm_cache_policy *p)
+bool dm_cache_policy_is_shim(struct dm_cache_policy *p)
 {
 	struct dm_cache_policy_type *t = p->private;
 
-	return (t->flags & CACHE_POLICY_SHIM_FLAG) ? true : false;
+	return (t->features & DM_CACHE_POLICY_SHIM) ? true : false;
 }
-EXPORT_SYMBOL_GPL(dm_cache_is_shim_policy);
+EXPORT_SYMBOL_GPL(dm_cache_policy_is_shim);
 
 /*----------------------------------------------------------------*/

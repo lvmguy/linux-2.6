@@ -5,7 +5,7 @@
  *
  * TESTING! NOT FOR PRODUCTION USE!
  *
- * SHim "hints" cache replacement policy to test variable hint size.
+ * Shim "hints" cache replacement policy to test variable hint size.
  *
  * Stackable on any other policy.
  *
@@ -291,7 +291,7 @@ static struct dm_cache_policy_type hints_policy_type = {
 	.hint_size = DEFAULT_HINT_SIZE,
 	.owner = THIS_MODULE,
 	.create = hints_policy_create,
-	.flags = CACHE_POLICY_SHIM_FLAG
+	.features = DM_CACHE_POLICY_SHIM
 };
 
 static int __init hints_init(void)

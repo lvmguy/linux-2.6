@@ -108,14 +108,18 @@ static struct dm_cache_policy *stack_root_create(const char *policy_stack_str,
 		t->hint_size += hint_size;
 
 		seg_name = dm_cache_policy_get_name(child);
-		canonical_name_len += strlen(seg_name) + (dm_cache_is_shim_policy(child) ? 1 : 0);
+		canonical_name_len += strlen(seg_name) + (dm_cache_policy_is_shim(child) ? 1 : 0);
 
-		if (canonical_name_len >= sizeof(t->name))
-			goto err_length;
+		if (canonical_name_len >= sizeof(t->name)) {
+			DMWARN("policy stack string '%s' is too long",
+			       policy_stack_str);
+			kfree(p);
+			return NULL;
+		}
 
 		strcat(t->name, seg_name);
 
-		if (dm_cache_is_shim_policy(child)) {
+		if (dm_cache_policy_is_shim(child)) {
 			t->name[canonical_name_len - 1] = DM_CACHE_POLICY_STACK_DELIM;
 			t->name[canonical_name_len] = '\0';
 		}
@@ -128,12 +132,6 @@ static struct dm_cache_policy *stack_root_create(const char *policy_stack_str,
 
 	p->policy.private = t;
 	return &p->policy;
-
-err_length:
-	DMWARN("policy stack string '%s' is too long",
-	       policy_stack_str);
-	kfree(p);
-	return NULL;
 }
 
 static void stack_root_destroy(struct dm_cache_policy *p)
@@ -202,11 +200,14 @@ dm_cache_stack_utils_policy_stack_create(const char *policy_stack_str,
 			goto cleanup;
 
 		next_p->child = NULL;
-		*(p ? &p->child : &head_p) = next_p;
+		if (p)
+			p->child = next_p;
+		else
+			head_p = next_p;
 		p = next_p;
 
 		if (delim) {
-			if (!dm_cache_is_shim_policy(next_p)) {
+			if (!dm_cache_policy_is_shim(next_p)) {
 				DMERR("%s is no shim policy", policy_name);
 				goto cleanup;
 			}

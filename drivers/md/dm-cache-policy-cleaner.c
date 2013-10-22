@@ -440,8 +440,7 @@ static struct dm_cache_policy_type wb_policy_type = {
 	.version = {1, 0, 0},
 	.hint_size = 0,
 	.owner = THIS_MODULE,
-	.create = wb_create,
-	.flags = 0
+	.create = wb_create
 };
 
 static int __init wb_init(void)

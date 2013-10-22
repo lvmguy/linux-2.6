@@ -173,7 +173,7 @@ static struct dm_cache_policy_type bg_policy_type = {
 	.hint_size = 0,
 	.owner = THIS_MODULE,
         .create = background_create,
-	.flags = CACHE_POLICY_SHIM_FLAG
+	.features = DM_CACHE_POLICY_SHIM
 };
 
 static struct dm_cache_policy_type background_policy_type = {
@@ -182,7 +182,7 @@ static struct dm_cache_policy_type background_policy_type = {
 	.hint_size = 0,
 	.owner = THIS_MODULE,
         .create = background_create,
-	.flags = CACHE_POLICY_SHIM_FLAG
+	.features = DM_CACHE_POLICY_SHIM
 };
 
 static int __init background_init(void)

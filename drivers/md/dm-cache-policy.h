@@ -218,6 +218,11 @@ struct dm_cache_policy {
 /*----------------------------------------------------------------*/
 
 /*
+ * Indicates that a policy is only a shim layer in a policy stack.
+ */
+#define	DM_CACHE_POLICY_SHIM	 (1 << 0)
+
+/*
  * We maintain a little register of the different policy types.
  */
 #define CACHE_POLICY_NAME_SIZE 64
@@ -245,7 +250,8 @@ struct dm_cache_policy_type {
 	struct dm_cache_policy *(*create)(dm_cblock_t cache_size,
 					  sector_t origin_size,
 					  sector_t block_size);
-	unsigned long flags;
+
+	unsigned long features;
 };
 
 int dm_cache_policy_register(struct dm_cache_policy_type *type);
