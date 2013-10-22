@@ -228,7 +228,7 @@ static struct dm_cache_policy_type trc_policy_type = {
 	.hint_size = 0,
 	.owner = THIS_MODULE,
 	.create = trc_create,
-	.shim = true
+	.flags = CACHE_POLICY_SHIM_FLAG
 };
 
 static int __init trc_init(void)
