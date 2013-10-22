@@ -20,6 +20,7 @@ dm-cache-trc-y	+= dm-cache-policy-trc.o
 dm-cache-hints-y += dm-cache-policy-hints.o
 dm-cache-background-y += dm-cache-policy-background.o
 dm-cache-basic-y += dm-cache-policy-basic.o
+dm-cache-debug-y += dm-cache-policy-debug.o
 md-mod-y	+= md.o bitmap.o
 raid456-y	+= raid5.o
 
@@ -64,6 +65,7 @@ obj-$(CONFIG_DM_CACHE_CLEANER)	+= dm-cache-cleaner.o
 obj-$(CONFIG_DM_CACHE_TRC)	+= dm-cache-trc.o
 obj-$(CONFIG_DM_CACHE_BACKGROUND) += dm-cache-background.o
 obj-$(CONFIG_DM_CACHE_BASIC) += dm-cache-basic.o
+obj-$(CONFIG_DM_CACHE_DEBUG) += dm-cache-debug.o
 
 ifeq ($(CONFIG_DM_UEVENT),y)
 dm-mod-objs			+= dm-uevent.o
