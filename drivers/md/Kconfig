@@ -304,14 +304,6 @@ config DM_CACHE_BACKGROUND
        ---help---
          A stackable cache policy supporting writeback of dirty blocks
 
-config DM_CACHE_BASIC
-       tristate "Basic Cache Policies (LFU,LRU,...) (EXPERIMENTAL)"
-       depends on DM_CACHE
-       select BTREE
-       default y
-       ---help---
-         The bunch of elimentary cache policies
-
 config DM_MIRROR
        tristate "Mirror target"
        depends on BLK_DEV_DM
@@ -460,6 +452,15 @@ config DM_FAKE_DISCARD
        default y
        ---help---
        A target that pretends to support discard, with various parameters.
+
+config DM_CACHE_BASIC
+       tristate "Basic Cache Policies (LFU,LRU,...) (EXPERIMENTAL)"
+       depends on DM_TEST_TARGETS
+       depends on DM_CACHE
+       select BTREE
+       default y
+       ---help---
+         The bunch of elimentary cache policies
 
 config DM_CACHE_DEBUG
        tristate "Debug Cache Policy shim (EXPERIMENTAL)"
