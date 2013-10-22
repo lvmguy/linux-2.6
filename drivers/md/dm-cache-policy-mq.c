@@ -975,8 +975,7 @@ static int mq_lookup(struct dm_cache_policy *p, dm_oblock_t oblock, dm_cblock_t 
 }
 
 // FIXME: can these block?
-// FIXME: duplication
-static int mq_set_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
+static int _mq_set_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock, bool set)
 {
 	int r = 0;
 	struct mq_policy *mq = to_mq_policy(p);
@@ -986,13 +985,21 @@ static int mq_set_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 	e = hash_lookup(mq, oblock);
 	if (!e) {
 		r = -ENOENT;
-		DMWARN("mq_set_dirty called for a block that isn't in the cache");
+		DMWARN("mq_{set,clear}_dirty called for a block that isn't in the cache");
 
 	} else {
 		BUG_ON(!e->in_cache);
 
 		del(mq, e);
-		e->dirty = true;
+
+		if (set)
+			r = e->dirty ? -EINVAL : 0;
+		else
+			r = e->dirty ? 0 : -EINVAL;
+
+		// DMDEBUG_LIMIT("%s dirty=%d r=%d", __func__, set, r); /* FIXME: REMOVEME: */
+
+		e->dirty = set;
 		push(mq, e);
 	}
 
@@ -1001,29 +1008,14 @@ static int mq_set_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 	return r;
 }
 
+static int mq_set_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
+{
+	return _mq_set_clear_dirty(p, oblock, true);
+}
+
 static int mq_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 {
-	int r = 0;
-	struct mq_policy *mq = to_mq_policy(p);
-	struct entry *e;
-
-	mutex_lock(&mq->lock);
-	e = hash_lookup(mq, oblock);
-	if (!e) {
-		r = -ENOENT;
-		DMWARN("mq_clear_dirty called for a block that isn't in the cache");
-
-	} else {
-		BUG_ON(!e->in_cache);
-
-		del(mq, e);
-		e->dirty = false;
-		push(mq, e);
-	}
-
-	mutex_unlock(&mq->lock);
-
-	return r;
+	return _mq_set_clear_dirty(p, oblock, false);
 }
 
 static int mq_load_mapping(struct dm_cache_policy *p,
