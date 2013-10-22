@@ -33,6 +33,8 @@
 #include <linux/random.h>
 #include <linux/slab.h>
 
+#define DM_MSG_PREFIX "cache-policy-basic"
+
 /* Cache input queue defines. */
 #define	READ_PROMOTE_THRESHOLD	6U	/* Minimum read cache in queue promote per element threshold. */
 #define	WRITE_PROMOTE_THRESHOLD	12U	/* Minimum write cache in queue promote per element threshold. */
@@ -253,7 +255,7 @@ struct policy {
 		struct list_head free; /* Free cache entry list */
 		struct list_head used; /* Used cache entry list */
 		struct list_head walk; /* walk_mappings uses this list */
-		struct list_head dirty;/* next_dirty_block    " */
+		struct list_head dirty;/* writeback_work    " */
 	} queues;
 
 	/* MINORME: allocate only for multiqueue? */
@@ -1415,7 +1417,7 @@ static void add_dirty_entry(struct policy *p, struct basic_cache_entry *e)
 		queue_add_tail(&p->queues.dirty, &e->dirty);
 }
 
-static int _set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bool dirty)
+static int _set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bool set)
 {
 	int r;
 	struct policy *p = to_policy(pe);
@@ -1424,12 +1426,21 @@ static int _set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bool
 	mutex_lock(&p->lock);
 
 	e = lookup_cache_entry(p, oblock);
-	BUG_ON(!e);
-	r = !list_empty(&e->dirty);
-	queue_del(&e->dirty);
+	if (!e) {
+		DMWARN("basic_{set,clear}_dirty called for a block that isn't in the cache");
+		r = -ENOENT;
 
-	if (dirty)
-		add_dirty_entry(p, e);
+	} else {
+		r = list_empty(&e->dirty);
+		queue_del(&e->dirty);
+
+		if (set) {
+			add_dirty_entry(p, e);
+			r = r ? 0 : - EINVAL;
+
+		} else
+			r = r ? -EINVAL : 0;
+	}
 
 	mutex_unlock(&p->lock);
 
@@ -1559,26 +1570,21 @@ static void basic_remove_mapping(struct dm_cache_policy *pe, dm_oblock_t oblock)
 	e = __basic_force_remove_mapping(p, oblock);
 	BUG_ON(!e);
 	add_to_free_list(p, e);
-
 	mutex_unlock(&p->lock);
 }
 
 static void basic_force_mapping(struct dm_cache_policy *pe,
-				dm_oblock_t current_oblock, dm_oblock_t oblock)
+				dm_oblock_t current_oblock, dm_oblock_t new_oblock)
 {
 	struct policy *p = to_policy(pe);
 	struct basic_cache_entry *e;
 
 	mutex_lock(&p->lock);
 	e = __basic_force_remove_mapping(p, current_oblock);
-	e->ce.oblock = oblock;
+	e->ce.oblock = new_oblock;
+	queue_del(&e->dirty);
 	add_cache_entry(p, e);
-
-	if (!list_empty(&e->dirty)) {
-		list_del(&e->dirty);
-		add_dirty_entry(p, e);
-	}
-
+	add_dirty_entry(p, e);
 	mutex_unlock(&p->lock);
 }
 
@@ -1592,6 +1598,7 @@ static int basic_invalidate_mapping(struct dm_cache_policy *pe, dm_oblock_t *obl
 	e = __basic_force_remove_mapping(p, *oblock);
 	if (e) {
 		*cblock = e->cblock;
+		queue_del(&e->dirty);
 		add_to_free_list(p, e);
 		r = 0;
 
@@ -1603,9 +1610,9 @@ static int basic_invalidate_mapping(struct dm_cache_policy *pe, dm_oblock_t *obl
 	return r;
 }
 
-static int basic_next_dirty_block(struct dm_cache_policy *pe, dm_oblock_t *oblock, dm_cblock_t *cblock)
+static int basic_writeback_work(struct dm_cache_policy *pe, dm_oblock_t *oblock, dm_cblock_t *cblock)
 {
-	int r = -ENODATA;
+	int r;
 	struct policy *p = to_policy(pe);
 	struct basic_cache_entry *e;
 	struct list_head *dirty = &p->queues.dirty;
@@ -1619,7 +1626,9 @@ static int basic_next_dirty_block(struct dm_cache_policy *pe, dm_oblock_t *obloc
 		*cblock = e->cblock;
 		*oblock = e->ce.oblock;
 		r = 0;
-	}
+
+	} else
+		r = -ENODATA;
 
 	mutex_unlock(&p->lock);
 
@@ -1695,8 +1704,7 @@ static void init_policy_functions(struct policy *p)
 	p->policy.walk_mappings = basic_walk_mappings;
 	p->policy.remove_mapping = basic_remove_mapping;
 	p->policy.invalidate_mapping = basic_invalidate_mapping;
-	p->policy.writeback_work = basic_next_dirty_block; /* NULL for background policy. */
-	// p->policy.next_dirty_block = basic_next_dirty_block;
+	p->policy.writeback_work = basic_writeback_work;
 	p->policy.force_mapping = basic_force_mapping;
 	p->policy.residency = basic_residency;
 	p->policy.tick = NULL;
@@ -1861,7 +1869,7 @@ static struct dm_cache_policy_type policy ## _policy_type = { \
 	.hint_size = hints_size, \
 	.owner = THIS_MODULE, \
 	.create = policy ## _create, \
-	.shim = false \
+	.flags = 0 \
 };
 
 #define	__CREATE_POLICY_TYPE(policy, hint_size) \
