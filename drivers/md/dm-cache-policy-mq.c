@@ -1032,7 +1032,7 @@ static int mq_load_mapping(struct dm_cache_policy *p,
 	e->cblock = cblock;
 	e->oblock = oblock;
 	e->in_cache = true;
-	e->dirty = true;	/* this gets corrected in a minute */
+	e->dirty = false;	/* this gets corrected in a minute */
 	e->hit_count = hint_valid ? le32_to_cpu(*((__le32 *) hint)) : 1;
 	e->generation = mq->generation;
 	push(mq, e);
@@ -1089,12 +1089,10 @@ static int __remove_mapping(struct mq_policy *mq,
 		e->in_cache = false;
 		e->dirty = false;
 
-		if (cblock) {
+		if (cblock)
 			*cblock = e->cblock;
-			list_add(&e->list, &mq->free);
-		} else
-			push(mq, e);
 
+		push(mq, e);
 		return 0;
 	}
 
@@ -1330,7 +1328,8 @@ static struct dm_cache_policy_type mq_policy_type = {
 	.version = {1, 0, 0},
 	.hint_size = 4,
 	.owner = THIS_MODULE,
-	.create = mq_create
+	.create = mq_create,
+	.flags = 0
 };
 
 static struct dm_cache_policy_type default_policy_type = {
@@ -1339,7 +1338,7 @@ static struct dm_cache_policy_type default_policy_type = {
 	.hint_size = 4,
 	.owner = THIS_MODULE,
 	.create = mq_create,
-	.shim = false
+	.flags = 0
 };
 
 static int __init mq_init(void)
