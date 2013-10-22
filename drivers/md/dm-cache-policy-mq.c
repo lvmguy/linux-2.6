@@ -420,11 +420,15 @@ static struct entry *alloc_entry(struct mq_policy *mq)
 		return NULL;
 	}
 
-	e = list_entry(list_pop(&mq->free), struct entry, list);
-	INIT_LIST_HEAD(&e->list);
-	INIT_HLIST_NODE(&e->hlist);
+	if (!list_empty(&mq->free)) {
+		e = list_entry(list_pop(&mq->free), struct entry, list);
+		INIT_LIST_HEAD(&e->list);
+		INIT_HLIST_NODE(&e->hlist);
+		mq->nr_entries_allocated++;
 
-	mq->nr_entries_allocated++;
+	} else
+		e = NULL;
+
 	return e;
 }
 
