@@ -220,7 +220,7 @@ struct dm_cache_policy {
 /*
  * We maintain a little register of the different policy types.
  */
-#define CACHE_POLICY_NAME_SIZE 16
+#define CACHE_POLICY_NAME_SIZE 64
 #define CACHE_POLICY_VERSION_SIZE 3
 
 struct dm_cache_policy_type {
