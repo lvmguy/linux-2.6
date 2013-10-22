@@ -38,11 +38,11 @@ struct debug_entry {
 };
 
 struct good_state_counts {
-	unsigned hit, map_miss, miss, new, replace, op, cblock, load, remove, force, residency;
+	unsigned hit, map_miss, miss, new, replace, op, lookup, dirty, clean, cblock, load, remove, force, writeback, invalidate, residency;
 };
 
 struct bad_state_counts {
-	unsigned hit, map_miss, miss, new, replace, op, cblock, load, remove, force, residency_larger, residency_invalid;
+	unsigned hit, map_miss, miss, new, replace, op, lookup, dirty, clean, cblock, load, remove, force, writeback, invalidate, residency_larger, residency_invalid;
 };
 
 struct debug_policy {
@@ -76,7 +76,7 @@ static bool test_ok(struct debug_policy *debug)
 {
 	struct bad_state_counts *b = &debug->bad;
 
-	return b->hit + b->miss + b->new + b->replace + b->op + b->cblock + b->load + b->remove + b->force + b->residency_larger + b->residency_invalid > 0 ? false : true;
+	return b->hit + b->miss + b->new + b->replace + b->op + b->lookup + b->dirty + b->clean + b->cblock + b->load + b->remove + b->force + b->writeback + b->invalidate + b->residency_larger + b->residency_invalid > 0 ? false : true;
 }
 
 /*----------------------------------------------------------------------------*/
@@ -219,7 +219,7 @@ static void free_debug_blocks_and_hashs(struct debug_policy *debug)
 	free_dblocks(debug);
 }
 
-static void free_debug_entry(struct debug_policy *debug, struct debug_entry *e)
+static void remove_debug_entry(struct debug_policy *debug, struct debug_entry *e)
 {
 	BUG_ON(!e);
 	remove_origin_hash_entry(debug, e);
@@ -232,7 +232,8 @@ static void free_debug_entry(struct debug_policy *debug, struct debug_entry *e)
 	debug->nr_dblocks_allocated--;
 }
 
-static struct debug_entry *alloc_and_add_debug_entry(struct debug_policy *debug, dm_oblock_t oblock, dm_cblock_t cblock)
+static struct debug_entry *insert_debug_entry(struct debug_policy *debug,
+					      dm_oblock_t oblock, dm_cblock_t cblock)
 {
 	struct debug_entry *e = list_entry(list_pop(&debug->free), struct debug_entry, list);
 
@@ -262,8 +263,8 @@ static void check_op(struct debug_policy *debug, char *name, enum policy_operati
 	}
 }
 
-static struct debug_entry *analyse_map_result(struct debug_policy *debug, dm_oblock_t oblock,
-					      int map_ret, struct policy_result *result)
+static void analyse_map_result(struct debug_policy *debug, dm_oblock_t oblock,
+			       int map_ret, struct policy_result *result)
 {
 	bool cblock_ok = true;
 	struct debug_entry *ec = from_cblock(result->cblock) < from_cblock(debug->cache_size) ?
@@ -284,7 +285,7 @@ static struct debug_entry *analyse_map_result(struct debug_policy *debug, dm_obl
 		} else
 			debug->good.map_miss++;
 
-		return NULL;
+		return;
 	}
 
 	switch (result->op) {
@@ -326,7 +327,7 @@ static struct debug_entry *analyse_map_result(struct debug_policy *debug, dm_obl
 				       name, from_oblock(oblock), from_cblock(ec->cblock));
 
 			check_op(debug, "POLICY_NEW", ec->op);
-			free_debug_entry(debug, ec);
+			remove_debug_entry(debug, ec);
 			ec = eo = NULL;
 			debug->bad.new++;
 
@@ -335,7 +336,7 @@ static struct debug_entry *analyse_map_result(struct debug_policy *debug, dm_obl
 
 
 		if (eo) {
-			free_debug_entry(debug, eo);
+			remove_debug_entry(debug, eo);
 			ec = eo = NULL;
 		}
 
@@ -359,7 +360,7 @@ static struct debug_entry *analyse_map_result(struct debug_policy *debug, dm_obl
 				debug->good.replace++;
 
 			check_op(debug, "POLICY_REPLACE", eo->op);
-			free_debug_entry(debug, eo);
+			remove_debug_entry(debug, eo);
 			ec = eo = NULL;
 		}
 
@@ -393,11 +394,9 @@ static struct debug_entry *analyse_map_result(struct debug_policy *debug, dm_obl
 		debug->bad.op++;
 	}
 
-	eo = eo ? eo : alloc_and_add_debug_entry(debug, oblock, cblock_ok ? result->cblock : debug->cache_size);
+	eo = eo ? eo : insert_debug_entry(debug, oblock, cblock_ok ? result->cblock : debug->cache_size);
 	eo->op = result->op; /* Memorize op for next analysis cycle. */
 	debug->analysed++;
-
-	return eo;
 }
 
 static void log_stats(struct debug_policy *debug)
@@ -405,12 +404,16 @@ static void log_stats(struct debug_policy *debug)
 	if (++debug->hit > (from_cblock(debug->cache_size) << 1)) {
 		debug->hit = 0;
 		DMINFO("%s nr_dblocks_allocated/analysed = %u/%u good/bad hit=%u/%u,miss=%u/%u,map_miss=%u/%u,new=%u/%u,replace=%u/%u,op=%u/%u,"
-		       "cblock=%u/%u,load=%u/%u,remove=%u/%u,force=%u/%u residency ok/larger/invalid=%u/%u/%u",
+		       "lookup=%u/%u,set_dirty=%u/%u,clear_dirty=%u/%u,"
+		       "cblock=%u/%u,load=%u/%u,remove=%u/%u,force=%u/%u,writeback=%u/%u,invalidate=%u/%u residency ok/larger/invalid=%u/%u/%u",
 		       dm_cache_policy_get_name(debug->policy.child),
 		       debug->nr_dblocks_allocated, debug->analysed,
 		       debug->good.hit, debug->bad.hit, debug->good.miss, debug->bad.miss, debug->good.map_miss, debug->bad.map_miss, debug->good.new, debug->bad.new,
-		       debug->good.replace, debug->bad.replace, debug->good.op, debug->bad.op, debug->good.cblock, debug->bad.cblock,
+		       debug->good.replace, debug->bad.replace, debug->good.op, debug->bad.op,
+		       debug->good.lookup, debug->bad.lookup, debug->good.dirty, debug->bad.dirty, debug->good.clean, debug->bad.clean,
+		       debug->good.cblock, debug->bad.cblock,
 		       debug->good.load, debug->bad.load, debug->good.remove, debug->bad.remove, debug->good.force, debug->bad.force,
+		       debug->good.writeback, debug->bad.writeback, debug->good.invalidate, debug->bad.invalidate,
 		       debug->good.residency, debug->bad.residency_larger, debug->bad.residency_invalid);
 	}
 }
@@ -422,7 +425,6 @@ static int debug_map(struct dm_cache_policy *p, dm_oblock_t oblock,
 {
 	int r;
 	struct debug_policy *debug = to_debug_policy(p);
-	struct debug_entry *e;
 
 	result->op = POLICY_MISS;
 
@@ -434,7 +436,10 @@ static int debug_map(struct dm_cache_policy *p, dm_oblock_t oblock,
 
 	r = policy_map(p->child, oblock, can_block, can_migrate,
 		       discarded_oblock, bio, result);
-	e = analyse_map_result(debug, oblock, r, result);
+
+	/* analyze_map_reult() allocates a debug entry unless -EWOULDBLOCK */
+	analyse_map_result(debug, oblock, r, result);
+
 	log_stats(debug);
 	mutex_unlock(&debug->lock);
 
@@ -461,9 +466,11 @@ static int debug_lookup(struct dm_cache_policy *p, dm_oblock_t oblock, dm_cblock
 		switch (r) {
 		case -ENOENT:
 		case -EWOULDBLOCK:
+			debug->good.lookup++;
 			break;
 
 		default:
+			debug->bad.lookup++;
 			DMWARN("%s->lookup: inalid code %u", name, r);
 		}
 
@@ -479,18 +486,21 @@ static int debug_lookup(struct dm_cache_policy *p, dm_oblock_t oblock, dm_cblock
 	return r;
 }
 
-static void analyze_set_clear_dirty(struct dm_cache_policy *p, const char *caller, int r)
+static void analyze_set_clear_dirty(struct dm_cache_policy *p, bool dirty, int r)
 {
+	struct debug_policy *debug = to_debug_policy(p);
 	const char *name = dm_cache_policy_get_name(p->child);
 
 	switch (r) {
 	case 0:
 	case 1:
 	case -EOPNOTSUPP:
+		dirty ? debug->good.dirty++ : debug->good.clean++;
 		break;
 
 	default:
-		DMWARN("%s->%s invalid return=%d", name, caller, r);
+		DMWARN("%s->%s_dirty invalid return=%d", name, dirty ? "set" : "clear", r);
+		dirty ? debug->bad.dirty++ : debug->bad.clean++;
 	}
 }
 
@@ -498,7 +508,7 @@ static int debug_set_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 {
 	int r = policy_set_dirty(p->child, oblock);
 
-	analyze_set_clear_dirty(p, "set_dirty", r);
+	analyze_set_clear_dirty(p, true, r);
 	return r;
 }
 
@@ -506,7 +516,7 @@ static int debug_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 {
 	int r = policy_clear_dirty(p->child, oblock);
 
-	analyze_set_clear_dirty(p, "clear_dirty", r);
+	analyze_set_clear_dirty(p, false, r);
 	return r;
 }
 
@@ -540,11 +550,11 @@ static int debug_load_mapping(struct dm_cache_policy *p,
 			DMWARN("%s->load_mapping: oblock=%llu/cblock=%u already existing invalid!",
 				dm_cache_policy_get_name(p->child), (LLU) from_oblock(oblock), from_cblock(cblock));
 
-		free_debug_entry(debug, eo ? eo : ec);
+		remove_debug_entry(debug, eo ? eo : ec);
 		debug->bad.load++;
 
 	} else {
-		alloc_and_add_debug_entry(debug, oblock, cblock);
+		insert_debug_entry(debug, oblock, cblock);
 		debug->good.load++;
 	}
 
@@ -572,7 +582,7 @@ static void debug_remove_mapping(struct dm_cache_policy *p, dm_oblock_t oblock)
 	mutex_lock(&debug->lock);
 	e = lookup_debug_entry_by_origin_block(debug, oblock);
 	if (e) {
-		free_debug_entry(debug, e);
+		remove_debug_entry(debug, e);
 		debug->good.remove++;
 
 	} else {
@@ -600,8 +610,8 @@ static void debug_force_mapping(struct dm_cache_policy *p,
 		dm_cblock_t cblock = e->cblock;
 
 		/* Replace with new information .*/
-		free_debug_entry(debug, e);
-		e = alloc_and_add_debug_entry(debug, oblock, cblock);
+		remove_debug_entry(debug, e);
+		e = insert_debug_entry(debug, oblock, cblock);
 		e->op = op;
 		debug->good.force++;
 
@@ -618,34 +628,48 @@ static void debug_force_mapping(struct dm_cache_policy *p,
 	mutex_unlock(&debug->lock);
 }
 
-static void analyze_wb_im_result(struct debug_policy *debug, const char *caller, int r, bool enoent,
+static void analyze_wb_im_result(struct debug_policy *debug, bool writeback_work, int r,
 				 dm_cblock_t *cblock, dm_oblock_t *oblock)
 {
+	bool err = false;
 	const char *name = dm_cache_policy_get_name(debug->policy.child);
+	const char *caller = writeback_work ? "writeback_work" : "invalidate_mapping";
 
 	if (r) {
-		if (r != (enoent ? -ENODATA : -ENOENT))
+		if (r != (writeback_work ? -ENODATA : -ENOENT)) {
 			DMWARN("%s->%s return code %d invalid!", name, caller, r);
+			err = true;
+		}
 
 	} else {
-		if (from_cblock(*cblock) >= from_cblock(debug->cache_size))
-			DMWARN("%s->%s cblock=%u invalid!", name, caller, from_cblock(*cblock));
+		struct debug_entry *ec, *eo;
 
-		if (from_oblock(*oblock) >= from_oblock(debug->origin_blocks))
+		mutex_lock(&debug->lock);
+		ec = lookup_debug_entry_by_cache_block(debug, *cblock);
+		eo = lookup_debug_entry_by_origin_block(debug, *oblock);
+		WARN_ON(!ec);
+		WARN_ON(!eo);
+		ec = ec ? ec : eo;
+		if (ec)
+			remove_debug_entry(debug, ec);
+		mutex_unlock(&debug->lock);
+
+		if (from_cblock(*cblock) >= from_cblock(debug->cache_size)) {
+			DMWARN("%s->%s cblock=%u invalid!", name, caller, from_cblock(*cblock));
+			err = true;
+		}
+
+		if (from_oblock(*oblock) >= from_oblock(debug->origin_blocks)) {
 			DMWARN("%s->%s oblock=%llu invalid!", name, caller, (LLU) from_oblock(*oblock));
+			err = true;
+		}
+
 	}
 
-}
-
-static int debug_invalidate_mapping(struct dm_cache_policy *p,
-				    dm_oblock_t *oblock, dm_cblock_t *cblock)
-{
-	struct debug_policy *debug = to_debug_policy(p);
-	int r = policy_invalidate_mapping(p->child, oblock, cblock);
-
-	analyze_wb_im_result(debug, "invalidate_mapping", r, false, cblock, oblock);
-
-	return r;
+	if (err)
+		writeback_work ? debug->bad.writeback++ : debug->bad.invalidate++;
+	else
+		writeback_work ? debug->good.writeback++ : debug->good.invalidate++;
 }
 
 static int debug_writeback_work(struct dm_cache_policy *p,
@@ -654,7 +678,18 @@ static int debug_writeback_work(struct dm_cache_policy *p,
 	struct debug_policy *debug = to_debug_policy(p);
 	int r = policy_writeback_work(p->child, oblock, cblock);
 
-	analyze_wb_im_result(debug, "invalidate_mapping", r, true, cblock, oblock);
+	analyze_wb_im_result(debug, true, r, cblock, oblock);
+
+	return r;
+}
+
+static int debug_invalidate_mapping(struct dm_cache_policy *p,
+				    dm_oblock_t *oblock, dm_cblock_t *cblock)
+{
+	struct debug_policy *debug = to_debug_policy(p);
+	int r = policy_invalidate_mapping(p->child, oblock, cblock);
+
+	analyze_wb_im_result(debug, false, r, cblock, oblock);
 
 	return r;
 }
@@ -788,6 +823,14 @@ static struct dm_cache_policy *debug_create(dm_cblock_t cache_size,
 }
 /*----------------------------------------------------------------------------*/
 
+static struct dm_cache_policy_type dbg_policy_type = {
+	.name = "dbg",
+	.version = {1, 0, 0},
+	.owner = THIS_MODULE,
+	.create = debug_create,
+	.flags = CACHE_POLICY_SHIM_FLAG
+};
+
 static struct dm_cache_policy_type debug_policy_type = {
 	.name = "debug",
 	.version = {1, 0, 0},
@@ -804,15 +847,25 @@ static int __init debug_init(void)
 	if (!debug_block_cache)
 		return -ENOMEM;
 
+	r = dm_cache_policy_register(&dbg_policy_type);
+	if (r)
+		goto bad_kmem_cache_destroy;
+
 	r = dm_cache_policy_register(&debug_policy_type);
 	if (r)
-		kmem_cache_destroy(debug_block_cache);
+		goto bad_dbg_unregister;
 
 	DMINFO("version %u.%u.%u loaded",
 	       debug_policy_type.version[0],
 	       debug_policy_type.version[1],
 	       debug_policy_type.version[2]);
 
+	return 0;
+
+bad_dbg_unregister:
+	dm_cache_policy_unregister(&dbg_policy_type);
+bad_kmem_cache_destroy:
+	kmem_cache_destroy(debug_block_cache);
 	return r;
 }
 
@@ -820,6 +873,7 @@ static void __exit debug_exit(void)
 {
 	kmem_cache_destroy(debug_block_cache);
 	dm_cache_policy_unregister(&debug_policy_type);
+	dm_cache_policy_unregister(&dbg_policy_type);
 }
 
 module_init(debug_init);
@@ -828,3 +882,6 @@ module_exit(debug_exit);
 MODULE_AUTHOR("Heinz Mauelshagen <dm-devel@redhat.com>");
 MODULE_LICENSE("GPL");
 MODULE_DESCRIPTION("debug cache policy shim");
+
+MODULE_ALIAS("dm-cache-dbg");
+/*----------------------------------------------------------------*/
