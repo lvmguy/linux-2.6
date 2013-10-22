@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012 Red Hat. All rights reserved.
+ * Copyright (C) 2012,2013 Red Hat. All rights reserved.
  *
  * This file is released under the GPL.
  *
@@ -36,8 +36,8 @@
 #define DM_MSG_PREFIX "cache-policy-basic"
 
 /* Cache input queue defines. */
-#define	READ_PROMOTE_THRESHOLD	6U	/* Minimum read cache in queue promote per element threshold. */
-#define	WRITE_PROMOTE_THRESHOLD	12U	/* Minimum write cache in queue promote per element threshold. */
+#define	READ_PROMOTE_THRESHOLD	2U	/* Minimum read cache in queue promote per element threshold. */
+#define	WRITE_PROMOTE_THRESHOLD	8U	/* Minimum write cache in queue promote per element threshold. */
 
 /* Default "multiqueue" queue timeout. */
 #define	MQ_QUEUE_TMO_DEFAULT	(5UL * HZ)	/* Default seconds queue maximum lifetime per entry. FIXME: dynamic? */
