@@ -1032,7 +1032,7 @@ static int mq_load_mapping(struct dm_cache_policy *p,
 	e->cblock = cblock;
 	e->oblock = oblock;
 	e->in_cache = true;
-	e->dirty = false;	/* this gets corrected in a minute but that fails background shim policy */
+	e->dirty = false;	/* this gets corrected in a minute */
 	e->hit_count = hint_valid ? le32_to_cpu(*((__le32 *) hint)) : 1;
 	e->generation = mq->generation;
 	push(mq, e);
