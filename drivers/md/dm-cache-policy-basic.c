@@ -36,7 +36,7 @@
 #define DM_MSG_PREFIX "cache-policy-basic"
 
 /* Cache input queue defines. */
-#define	READ_PROMOTE_THRESHOLD	2U	/* Minimum read cache in queue promote per element threshold. */
+#define	READ_PROMOTE_THRESHOLD	6U	/* Minimum read cache in queue promote per element threshold. */
 #define	WRITE_PROMOTE_THRESHOLD	8U	/* Minimum write cache in queue promote per element threshold. */
 
 /* Default "multiqueue" queue timeout. */
@@ -986,7 +986,6 @@ static struct list_head *queue_evict_default(struct policy *p)
 	struct basic_cache_entry *e = list_entry(r, struct basic_cache_entry, ce.list);
 
 	queue_del(&e->walk);
-	queue_del(&e->dirty);
 
 	return r;
 }
@@ -1014,7 +1013,6 @@ static struct list_head *queue_evict_lfu_mfu(struct policy *p)
 	e = list_entry(r, struct basic_cache_entry, ce.list);
 	e->saved = 0;
 	queue_del(&e->walk);
-	queue_del(&e->dirty);
 
 	return r;
 }
@@ -1040,7 +1038,6 @@ static struct list_head *queue_evict_random(struct policy *p)
 	e = list_entry(r, struct basic_cache_entry, ce.list);
 	queue_del(r);
 	queue_del(&e->walk);
-	queue_del(&e->dirty);
 
 	return r;
 }
@@ -1061,7 +1058,6 @@ static struct list_head *queue_evict_multiqueue(struct policy *p)
 			r = queue_pop(cur);
 			e = list_entry(r, struct basic_cache_entry, ce.list);
 			queue_del(&e->walk);
-			queue_del(&e->dirty);
 
 			return r;
 		}
@@ -1246,7 +1242,6 @@ static void get_cache_block(struct policy *p, dm_oblock_t oblock, struct bio *bi
 
 	result->cblock = e->cblock;
 	e->ce.oblock = oblock;
-	queue_del(&e->dirty);
 	add_cache_entry(p, e);
 }
 
@@ -1297,7 +1292,7 @@ static int map(struct policy *p, dm_oblock_t oblock,
 	       struct bio *bio, struct policy_result *result)
 {
 	int rw = to_rw(bio);
-	struct track_queue_entry *tqe;
+	struct track_queue_entry *tqe = NULL;
 
 	if (IS_NOOP(p))
 		return 0;
