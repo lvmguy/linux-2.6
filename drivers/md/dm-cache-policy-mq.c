@@ -997,8 +997,6 @@ static int _mq_set_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock, bo
 		else
 			r = e->dirty ? 0 : -EINVAL;
 
-		// DMDEBUG_LIMIT("%s dirty=%d r=%d", __func__, set, r); /* FIXME: REMOVEME: */
-
 		e->dirty = set;
 		push(mq, e);
 	}
