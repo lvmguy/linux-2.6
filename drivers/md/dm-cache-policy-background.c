@@ -52,7 +52,7 @@ static int background_set_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 	struct background_policy *bg = to_bg_policy(p);
 	int r = policy_set_dirty(p->child, oblock);
 
-	if (r == 0) /* 0 -> policy has set block to dirty. */
+	if (!r) /* 0 -> policy has set block to dirty. */
 		atomic_inc(&bg->dirty_cblocks);
 
 	return r;
@@ -63,8 +63,8 @@ static int background_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 	struct background_policy *bg = to_bg_policy(p);
 	int r = policy_clear_dirty(p->child, oblock);
 
-	if (r == 0) { /* 0 -> policy has set block to clean. */
-		BUG_ON(atomic_read(&bg->dirty_cblocks) == 0);
+	if (!r) { /* 0 -> policy has set block to clean. */
+		BUG_ON(!atomic_read(&bg->dirty_cblocks));
 		atomic_dec(&bg->dirty_cblocks);
 	}
 
@@ -83,7 +83,7 @@ static void background_force_mapping(struct dm_cache_policy *p,
 static int background_writeback_work(struct dm_cache_policy *p,
 				     dm_oblock_t *oblock, dm_cblock_t *cblock)
 {
-	int r = -ENODATA;
+	int r;
 	struct background_policy *bg = to_bg_policy(p);
 
 	smp_rmb();
@@ -91,7 +91,9 @@ static int background_writeback_work(struct dm_cache_policy *p,
 		r = policy_writeback_work(p->child, oblock, cblock);
 		if (!r)
 			atomic_dec(&bg->dirty_cblocks);
-	}
+
+	} else
+		r = -ENODATA;
 
 	return r;
 }
