@@ -401,7 +401,7 @@ static void analyse_map_result(struct debug_policy *debug, dm_oblock_t oblock,
 
 static void log_stats(struct debug_policy *debug)
 {
-	if (debug->hit++ > (from_cblock(debug->cache_size) << 1)) {
+	if (debug->hit++ > (from_cblock(debug->cache_size) << 3)) {
 		debug->hit = 0;
 		DMINFO("%s nr_dblocks_allocated/analysed = %u/%u good/bad hit=%u/%u,miss=%u/%u,map_miss=%u/%u,new=%u/%u,replace=%u/%u,op=%u/%u,"
 		       "lookup=%u/%u,set_dirty=%u/%u,clear_dirty=%u/%u,"
@@ -614,7 +614,7 @@ static void debug_remove_mapping(struct dm_cache_policy *p, dm_oblock_t oblock)
 }
 
 static void debug_force_mapping(struct dm_cache_policy *p,
-				dm_oblock_t current_oblock, dm_oblock_t oblock)
+				dm_oblock_t current_oblock, dm_oblock_t new_oblock)
 {
 	struct debug_policy *debug = to_debug_policy(p);
 	struct debug_entry *e;
@@ -627,7 +627,7 @@ static void debug_force_mapping(struct dm_cache_policy *p,
 
 		/* Replace with new information .*/
 		remove_debug_entry(debug, e);
-		e = insert_debug_entry(debug, oblock, cblock);
+		e = insert_debug_entry(debug, new_oblock, cblock);
 		e->op = op;
 		debug->good.force++;
 
@@ -635,12 +635,12 @@ static void debug_force_mapping(struct dm_cache_policy *p,
 		if (debug->verbose & 0x2)
 			DMWARN("%s->force_mapping: current_oblock=%llu/oblock=%llu invalid!",
 			       dm_cache_policy_get_name(p->child),
-			       (LLU) from_oblock(current_oblock), (LLU) from_oblock(oblock));
+			       (LLU) from_oblock(current_oblock), (LLU) from_oblock(new_oblock));
 
 		debug->bad.force++;
 	}
 
-	policy_force_mapping(p->child, current_oblock, oblock);
+	policy_force_mapping(p->child, current_oblock, new_oblock);
 	mutex_unlock(&debug->lock);
 }
 
