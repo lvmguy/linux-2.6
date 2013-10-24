@@ -19,6 +19,8 @@
 
 #define DM_MSG_PREFIX "cache"
 
+#define	DEBUG_TARGET	1
+
 DECLARE_DM_KCOPYD_THROTTLE_WITH_MODULE_PARM(cache_copy_throttle,
 	"A percentage of time allocated for copying to and/or from cache");
 
@@ -149,7 +151,7 @@ struct cache_stats {
 	atomic_t commit_count;
 	atomic_t discard_count;
 
-#if 1
+#if DEBUG_TARGET
 	/* FIXME: REMOVEME: devel */
 	atomic_t bw_priority;
 	atomic_t no_bw_priority;
@@ -1393,6 +1395,7 @@ static bool spare_migration_bandwidth(struct cache *cache, bool priority)
 		 *
 		 * Special case is to allow more in case we don't have any latency samples so far
 		 */
+#if DEBUG_TARGET
 		if (latency_ok == 0 ||
 		    (latency_ok == -EINVAL && !current_migrations) ||
 		    (latency_ok == -ENODATA && current_migrations < 64)) {
@@ -1400,34 +1403,58 @@ static bool spare_migration_bandwidth(struct cache *cache, bool priority)
 			return true;
 		} else
 			atomic_inc(&cache->stats.no_bw_priority);
+#else
+		if (latency_ok == 0 ||
+		    (latency_ok == -EINVAL && !current_migrations) ||
+		    (latency_ok == -ENODATA && current_migrations < 64))
+			return true;
+#endif
 
 	} else {
 		/* Only allow writeback while no bios and latency is ok */
+#if DEBUG_TARGET
 		if (!current_sectors_in_flight &&
 		    current_writeback_migrations < (latency_ok ? 5 : 1)) { /* FIXME: sensible? */
 			atomic_inc(&cache->stats.bw_no_migrations);
 			return true;
 		} else
 			atomic_inc(&cache->stats.no_bw_no_migrations);
+#else
+		if (!current_sectors_in_flight &&
+		    current_writeback_migrations < (latency_ok ? 5 : 1)) /* FIXME: sensible? */
+			return true;
+#endif
 	}
 
-
 	if (latency_ok) {
+#if DEBUG_TARGET
 		if ((current_migrations + current_writeback_migrations) * cache->sectors_per_block * 100 < (current_sectors_in_flight * cache->migration_threshold)) {
 			atomic_inc(&cache->stats.bw_migrations_lt_inflight);
 			return true;
 		} else
 			atomic_inc(&cache->stats.no_bw_migrations_lt_inflight);
+#else
+		if ((current_migrations + current_writeback_migrations) * cache->sectors_per_block * 100 < (current_sectors_in_flight * cache->migration_threshold))
+			return true;
+#endif
 
+#if DEBUG_TARGET
 		if (!priority && !current_sectors_in_flight && current_migrations &&
 		    current_writeback_migrations < (current_migrations >> 2)) {
 			atomic_inc(&cache->stats.bw_migration_ratio);
 			return true;
 		} else
 			atomic_inc(&cache->stats.no_bw_migration_ratio);
+#else
+		if (!priority && !current_sectors_in_flight && current_migrations &&
+		    current_writeback_migrations < (current_migrations >> 2))
+			return true;
+#endif
 	}
 
+#if DEBUG_TARGET
 	atomic_inc(&cache->stats.bw_declined);
+#endif
 	return false;
 }
 
@@ -2547,7 +2574,7 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	atomic_set(&cache->stats.cache_cell_clash, 0);
 	atomic_set(&cache->stats.commit_count, 0);
 	atomic_set(&cache->stats.discard_count, 0);
-#if 1
+#if DEBUG_TARGET
 	/* FIXME: REMOVEME: devel */
 	atomic_set(&cache->stats.bw_priority, 0);
 	atomic_set(&cache->stats.no_bw_priority, 0);
@@ -3066,19 +3093,7 @@ static void cache_status(struct dm_target *ti, status_type_t type,
 		residency = policy_residency(cache->policy);
 
 		smp_rmb();
-#if 0
-		DMEMIT("%llu/%llu %u %u %u %u %u %u %llu %u ",
-		       (unsigned long long)(nr_blocks_metadata - nr_free_blocks_metadata),
-		       (unsigned long long)nr_blocks_metadata,
-		       (unsigned) atomic_read(&cache->stats.read_hit),
-		       (unsigned) atomic_read(&cache->stats.read_miss),
-		       (unsigned) atomic_read(&cache->stats.write_hit),
-		       (unsigned) atomic_read(&cache->stats.write_miss),
-		       (unsigned) atomic_read(&cache->stats.demotion),
-		       (unsigned) atomic_read(&cache->stats.promotion),
-		       (unsigned long long) from_cblock(residency),
-		       cache->nr_dirty);
-#else
+#if DEBUG_TARGET
 		       /* FIXME: REMOVEME: devel */
 		DMEMIT("%llu/%llu %u %u %u %u %u %u %llu %u **%u %u,%u/%u,%u/%u,%u/%u,%u/%u,%u** ",
 		       (unsigned long long)(nr_blocks_metadata - nr_free_blocks_metadata),
@@ -3102,6 +3117,18 @@ static void cache_status(struct dm_target *ti, status_type_t type,
 		       (unsigned) atomic_read(&cache->stats.bw_migration_ratio),
 		       (unsigned) atomic_read(&cache->stats.no_bw_migration_ratio),
 		       (unsigned) atomic_read(&cache->stats.bw_declined));
+#else
+		DMEMIT("%llu/%llu %u %u %u %u %u %u %llu %u ",
+		       (unsigned long long)(nr_blocks_metadata - nr_free_blocks_metadata),
+		       (unsigned long long)nr_blocks_metadata,
+		       (unsigned) atomic_read(&cache->stats.read_hit),
+		       (unsigned) atomic_read(&cache->stats.read_miss),
+		       (unsigned) atomic_read(&cache->stats.write_hit),
+		       (unsigned) atomic_read(&cache->stats.write_miss),
+		       (unsigned) atomic_read(&cache->stats.demotion),
+		       (unsigned) atomic_read(&cache->stats.promotion),
+		       (unsigned long long) from_cblock(residency),
+		       cache->nr_dirty);
 #endif
 		if (writethrough_mode(&cache->features))
 			DMEMIT("1 writethrough ");
