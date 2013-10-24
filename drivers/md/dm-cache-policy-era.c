@@ -301,11 +301,11 @@ static int era_map(struct dm_cache_policy *p, dm_oblock_t oblock,
 		cb_idx = from_cblock(result->cblock);
 		BUG_ON(cb_idx >= from_cblock(era->cache_size));
 		smp_rmb();
+		era->cb_to_era[cb_idx] = era->era_counter;
 #if DEBUG_ERA
-		DMDEBUG("assigning era %u to cblock %u, oblock %llu due to write hit.",
+		DMDEBUG("assigned era %u to cblock %u, oblock %llu due to write hit.",
 			era->era_counter, result->cblock, oblock);
 #endif
-		era->cb_to_era[cb_idx] = era->era_counter;
 	}
 
 	mutex_unlock(&era->lock);
@@ -348,7 +348,6 @@ static int era_load_mapping(struct dm_cache_policy *p,
 			era->era_counter = recovered_era;
 			if (era->era_counter < ERA_MAX_ERA)
 				era->era_counter++;
-
 			smp_wmb();
 #if DEBUG_ERA
 			DMDEBUG("set era_counter to %u.", era->era_counter);
@@ -374,15 +373,14 @@ static void era_force_mapping(struct dm_cache_policy *p, dm_oblock_t old_oblock,
 	mutex_lock(&era->lock);
 
 	if (!policy_lookup(p->child, old_oblock, &cblock)) {
-#if DEBUG_ERA
 		smp_rmb();
-		DMDEBUG("assigning era %u to cblock %u, oblock %llu "
+		era->cb_to_era[from_cblock(cblock)] = era->era_counter;
+#if DEBUG_ERA
+		DMDEBUG("assigned era %u to cblock %u, oblock %llu "
 			"(old_oblock %llu) due to force_mapping.",
 			era->era_counter, cblock, new_oblock,
 			old_oblock);
 #endif
-		smp_rmb();
-		era->cb_to_era[from_cblock(cblock)] = era->era_counter;
 	}
 
 	policy_force_mapping(p->child, old_oblock, new_oblock);
