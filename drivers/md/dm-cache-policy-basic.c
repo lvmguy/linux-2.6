@@ -36,7 +36,7 @@
 #define DM_MSG_PREFIX "cache-policy-basic"
 
 /* Cache input queue defines. */
-#define	READ_PROMOTE_THRESHOLD	6U	/* Minimum read cache in queue promote per element threshold. */
+#define	READ_PROMOTE_THRESHOLD	4U	/* Minimum read cache in queue promote per element threshold. */
 #define	WRITE_PROMOTE_THRESHOLD	8U	/* Minimum write cache in queue promote per element threshold. */
 
 /* Default "multiqueue" queue timeout. */
@@ -1426,15 +1426,16 @@ static int _set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bool
 		r = -ENOENT;
 
 	} else {
-		r = list_empty(&e->dirty);
+		bool dirty = !list_empty(&e->dirty);
+
 		queue_del(&e->dirty);
 
 		if (set) {
 			add_dirty_entry(p, e);
-			r = r ? 0 : - EINVAL;
+			r = dirty ? 0 : - EINVAL;
 
 		} else
-			r = r ? -EINVAL : 0;
+			r = dirty ? -EINVAL : 0;
 	}
 
 	mutex_unlock(&p->lock);
@@ -1534,8 +1535,8 @@ static int basic_walk_mappings(struct dm_cache_policy *pe, policy_walk_fn fn,
 	return r;
 }
 
-static struct basic_cache_entry *__basic_force_remove_mapping(struct policy *p,
-							      dm_oblock_t oblock)
+static struct basic_cache_entry *__basic_remove_invalidate_mapping(struct policy *p,
+								   dm_oblock_t oblock)
 {
 	struct basic_cache_entry *r = lookup_cache_entry(p, oblock);
 
@@ -1562,7 +1563,7 @@ static void basic_remove_mapping(struct dm_cache_policy *pe, dm_oblock_t oblock)
 	struct basic_cache_entry *e;
 
 	mutex_lock(&p->lock);
-	e = __basic_force_remove_mapping(p, oblock);
+	e = __basic_remove_invalidate_mapping(p, oblock);
 	BUG_ON(!e);
 	add_to_free_list(p, e);
 	mutex_unlock(&p->lock);
@@ -1575,11 +1576,15 @@ static void basic_force_mapping(struct dm_cache_policy *pe,
 	struct basic_cache_entry *e;
 
 	mutex_lock(&p->lock);
-	e = __basic_force_remove_mapping(p, current_oblock);
-	e->ce.oblock = new_oblock;
-	queue_del(&e->dirty);
-	add_cache_entry(p, e);
-	add_dirty_entry(p, e);
+	e = lookup_cache_entry(p, current_oblock);
+	if (e) {
+		p->queues.fns->del(p, &e->ce.list);
+		e->ce.oblock = new_oblock;
+		queue_del(&e->dirty);
+		add_dirty_entry(p, e);
+		p->queues.fns->add(p, &e->ce.list);
+	}
+
 	mutex_unlock(&p->lock);
 }
 
@@ -1590,7 +1595,7 @@ static int basic_invalidate_mapping(struct dm_cache_policy *pe, dm_oblock_t *obl
 	struct basic_cache_entry *e;
 
 	mutex_lock(&p->lock);
-	e = __basic_force_remove_mapping(p, *oblock);
+	e = __basic_remove_invalidate_mapping(p, *oblock);
 	if (e) {
 		*cblock = e->cblock;
 		queue_del(&e->dirty);
