@@ -28,7 +28,7 @@
 	do { \
 		if (to_trc_policy(p)->trace_level >= lev) \
 			DMINFO("%s: " f, __func__, ## arg); \
-	} while (0);
+	} while (0)
 
 enum dm_trace_lev_e {
 	DM_TRC_LEV_OFF		= 0,

@@ -146,11 +146,11 @@ static int incr_era_counter(struct era_policy *era,
 		return -EINVAL;
 
 	smp_rmb();
-	if (era->era_counter != curr_era_counter) {
+	if (era->era_counter != curr_era_counter)
 		r = -ECANCELED;
-	} else if (era->era_counter >= ERA_MAX_ERA) {
+	else if (era->era_counter >= ERA_MAX_ERA)
 		r = -EOVERFLOW;
-	} else {
+	else {
 		era->era_counter++;
 		smp_wmb();
 		r = 0;
@@ -218,8 +218,7 @@ static int era_inval_oblocks(void *context, dm_cblock_t cblock,
 	return 0;
 }
 
-static int cond_unmap_by_era(struct era_policy *era,
-			     const char *test_era_str,
+static int cond_unmap_by_era(struct era_policy *era, const char *test_era_str,
 			     era_match_fn_t era_match_fn)
 {
 	struct shim_walk_map_ctx ctx;
@@ -349,6 +348,8 @@ static int era_load_mapping(struct dm_cache_policy *p,
 			era->era_counter = recovered_era;
 			if (era->era_counter < ERA_MAX_ERA)
 				era->era_counter++;
+
+			smp_wmb();
 #if DEBUG_ERA
 			DMDEBUG("set era_counter to %u.", era->era_counter);
 #endif
@@ -374,6 +375,7 @@ static void era_force_mapping(struct dm_cache_policy *p, dm_oblock_t old_oblock,
 
 	if (!policy_lookup(p->child, old_oblock, &cblock)) {
 #if DEBUG_ERA
+		smp_rmb();
 		DMDEBUG("assigning era %u to cblock %u, oblock %llu "
 			"(old_oblock %llu) due to force_mapping.",
 			era->era_counter, cblock, new_oblock,
@@ -459,6 +461,8 @@ static int era_emit_config_values(struct dm_cache_policy *p, char *result,
 {
 	struct era_policy *era = to_era_policy(p);
 	ssize_t sz = 0;
+
+	smp_rmb();
 	DMEMIT("era_counter %u ", era->era_counter);
 	return policy_emit_config_values(p->child, result + sz, maxlen - sz);
 }
