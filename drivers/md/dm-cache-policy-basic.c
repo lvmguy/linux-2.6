@@ -168,10 +168,10 @@ enum policy_type {
 	p_basic	/* The default selecting one of the above. */
 };
 
-struct policy;
-typedef void (*queue_add_fn)(struct policy *, struct list_head *);
-typedef void (*queue_del_fn)(struct policy *, struct list_head *);
-typedef struct list_head * (*queue_evict_fn)(struct policy *);
+struct basic_policy;
+typedef void (*queue_add_fn)(struct basic_policy *, struct list_head *);
+typedef void (*queue_del_fn)(struct basic_policy *, struct list_head *);
+typedef struct list_head * (*queue_evict_fn)(struct basic_policy *);
 
 struct queue_fns {
 	queue_add_fn add;
@@ -179,23 +179,23 @@ struct queue_fns {
 	queue_evict_fn evict;
 };
 
-static struct list_head *queue_evict_multiqueue(struct policy *);
-static void queue_add_noop(struct policy *, struct list_head *);
+static struct list_head *queue_evict_multiqueue(struct basic_policy *);
+static void queue_add_noop(struct basic_policy *, struct list_head *);
 
-#define	IS_FILO_MRU(p)			(p->queues.fns->add == &queue_add_filo_mru)
-#define	IS_MFU(p)			(p->queues.fns->del == &queue_del_mfu)
+#define	IS_FILO_MRU(basic)			(basic->queues.fns->add == &queue_add_filo_mru)
+#define	IS_MFU(basic)			(basic->queues.fns->del == &queue_del_mfu)
 
-#define	IS_LFU(p)			(p->queues.fns->add == &queue_add_lfu)
-#define	IS_MULTIQUEUE(p)		(p->queues.fns->evict == &queue_evict_multiqueue)
-#define	IS_Q2(p)			(p->queues.fns->add == &queue_add_q2)
-#define	IS_TWOQUEUE(p)			(p->queues.fns->add == &queue_add_twoqueue)
-#define	IS_DUMB(p)			(p->queues.fns->add == &queue_add_dumb)
-#define	IS_NOOP(p)			(p->queues.fns->add == &queue_add_noop)
+#define	IS_LFU(basic)			(basic->queues.fns->add == &queue_add_lfu)
+#define	IS_MULTIQUEUE(basic)		(basic->queues.fns->evict == &queue_evict_multiqueue)
+#define	IS_Q2(basic)			(basic->queues.fns->add == &queue_add_q2)
+#define	IS_TWOQUEUE(basic)			(basic->queues.fns->add == &queue_add_twoqueue)
+#define	IS_DUMB(basic)			(basic->queues.fns->add == &queue_add_dumb)
+#define	IS_NOOP(basic)			(basic->queues.fns->add == &queue_add_noop)
 
-#define	IS_FIFO_FILO(p)			(p->queues.fns->del == &queue_del_fifo_filo)
-#define	IS_Q2_TWOQUEUE(p)		(p->queues.fns->evict == &queue_evict_q2_twoqueue)
-#define	IS_MULTIQUEUE_Q2_TWOQUEUE(p)	(p->queues.fns->del == &queue_del_multiqueue)
-#define	IS_LFU_MFU_WS(p)		(p->queues.fns->evict == &queue_evict_lfu_mfu)
+#define	IS_FIFO_FILO(basic)			(basic->queues.fns->del == &queue_del_fifo_filo)
+#define	IS_Q2_TWOQUEUE(basic)		(basic->queues.fns->evict == &queue_evict_q2_twoqueue)
+#define	IS_MULTIQUEUE_Q2_TWOQUEUE(basic)	(basic->queues.fns->del == &queue_del_multiqueue)
+#define	IS_LFU_MFU_WS(basic)		(basic->queues.fns->evict == &queue_evict_lfu_mfu)
 
 static unsigned next_power(unsigned n, unsigned min)
 {
@@ -219,7 +219,7 @@ struct track_queue {
 	unsigned count[2][2], size, nr_elts;
 };
 
-struct policy {
+struct basic_policy {
 	struct dm_cache_policy policy;
 	struct mutex lock;
 
@@ -281,9 +281,9 @@ struct policy {
 
 /*----------------------------------------------------------------------------*/
 /* Low-level functions. */
-static struct policy *to_policy(struct dm_cache_policy *p)
+static struct basic_policy *to_basic_policy(struct dm_cache_policy *p)
 {
-	return container_of(p, struct policy, policy);
+	return container_of(p, struct basic_policy, policy);
 }
 
 static int to_rw(struct bio *bio)
@@ -353,23 +353,23 @@ static void free_hash(struct hash *hash)
 }
 
 /* Free/alloc basic cache entry structures. */
-static void free_cache_entries(struct policy *p)
+static void free_cache_entries(struct basic_policy *basic)
 {
 	struct basic_cache_entry *e, *tmp;
 
-	list_for_each_entry_safe(e, tmp, &p->queues.free, ce.list)
+	list_for_each_entry_safe(e, tmp, &basic->queues.free, ce.list)
 		kmem_cache_free(basic_entry_cache, e);
 
-	list_for_each_entry_safe(e, tmp, &p->queues.walk, walk)
+	list_for_each_entry_safe(e, tmp, &basic->queues.walk, walk)
 		kmem_cache_free(basic_entry_cache, e);
 }
 
-static int alloc_cache_blocks_with_hash(struct policy *p, unsigned cache_size)
+static int alloc_cache_blocks_with_hash(struct basic_policy *basic, unsigned cache_size)
 {
 	int r = -ENOMEM;
 	unsigned u = cache_size;
 
-	p->nr_cblocks_allocated = to_cblock(0);
+	basic->nr_cblocks_allocated = to_cblock(0);
 
 	while (u--) {
 		struct basic_cache_entry *e = kmem_cache_zalloc(basic_entry_cache, GFP_KERNEL);
@@ -378,24 +378,24 @@ static int alloc_cache_blocks_with_hash(struct policy *p, unsigned cache_size)
 			goto bad_cache_alloc;
 
 		queue_init(&e->dirty);
-		queue_add(&p->queues.free, &e->ce.list);
+		queue_add(&basic->queues.free, &e->ce.list);
 	}
 
 	/* Cache entries hash. */
-	r = alloc_hash(&p->chash, cache_size);
+	r = alloc_hash(&basic->chash, cache_size);
 	if (!r)
 		return 0;
 
 bad_cache_alloc:
-	free_cache_entries(p);
+	free_cache_entries(basic);
 
 	return r;
 }
 
-static void free_cache_blocks_and_hash(struct policy *p)
+static void free_cache_blocks_and_hash(struct basic_policy *basic)
 {
-	free_hash(&p->chash);
-	free_cache_entries(p);
+	free_hash(&basic->chash);
+	free_cache_entries(basic);
 }
 
 static void free_track_queue(struct track_queue *q)
@@ -434,71 +434,71 @@ bad_tq_alloc:
 	return r;
 }
 
-static int alloc_multiqueues(struct policy *p, unsigned mqueues)
+static int alloc_multiqueues(struct basic_policy *basic, unsigned mqueues)
 {
 	/* Multiqueue heads. */
-	p->queues.nr_mqueues = mqueues;
-	p->queues.mq = vzalloc(sizeof(*p->queues.mq) * mqueues);
-	if (!p->queues.mq)
+	basic->queues.nr_mqueues = mqueues;
+	basic->queues.mq = vzalloc(sizeof(*basic->queues.mq) * mqueues);
+	if (!basic->queues.mq)
 		return -ENOMEM;
 
 	while (mqueues--)
-		queue_init(&p->queues.mq[mqueues]);
+		queue_init(&basic->queues.mq[mqueues]);
 
 	return 0;
 }
 
-static void free_multiqueues(struct policy *p)
+static void free_multiqueues(struct basic_policy *basic)
 {
-	vfree(p->queues.mq);
+	vfree(basic->queues.mq);
 }
 
-static struct basic_cache_entry *alloc_cache_entry(struct policy *p)
+static struct basic_cache_entry *alloc_cache_entry(struct basic_policy *basic)
 {
 	struct basic_cache_entry *e;
-	struct list_head *free = &p->queues.free;
+	struct list_head *free = &basic->queues.free;
 
-	BUG_ON(from_cblock(p->nr_cblocks_allocated) >= from_cblock(p->cache_size));
+	BUG_ON(from_cblock(basic->nr_cblocks_allocated) >= from_cblock(basic->cache_size));
 
 	if (queue_empty(free))
 		e = NULL;
 
 	else {
 		e = list_entry(queue_pop(free), struct basic_cache_entry, ce.list);
-		p->nr_cblocks_allocated = to_cblock(from_cblock(p->nr_cblocks_allocated) + 1);
+		basic->nr_cblocks_allocated = to_cblock(from_cblock(basic->nr_cblocks_allocated) + 1);
 
 	}
 
 	return e;
 }
 
-static void alloc_cblock(struct policy *p, dm_cblock_t cblock)
+static void alloc_cblock(struct basic_policy *basic, dm_cblock_t cblock)
 {
-	BUG_ON(from_cblock(cblock) >= from_cblock(p->cache_size));
-	BUG_ON(test_bit(from_cblock(cblock), p->allocation_bitset));
-	set_bit(from_cblock(cblock), p->allocation_bitset);
+	BUG_ON(from_cblock(cblock) >= from_cblock(basic->cache_size));
+	BUG_ON(test_bit(from_cblock(cblock), basic->allocation_bitset));
+	set_bit(from_cblock(cblock), basic->allocation_bitset);
 }
 
-static void free_cblock(struct policy *p, dm_cblock_t cblock)
+static void free_cblock(struct basic_policy *basic, dm_cblock_t cblock)
 {
-	BUG_ON(from_cblock(cblock) >= from_cblock(p->cache_size));
-	BUG_ON(!test_bit(from_cblock(cblock), p->allocation_bitset));
-	clear_bit(from_cblock(cblock), p->allocation_bitset);
+	BUG_ON(from_cblock(cblock) >= from_cblock(basic->cache_size));
+	BUG_ON(!test_bit(from_cblock(cblock), basic->allocation_bitset));
+	clear_bit(from_cblock(cblock), basic->allocation_bitset);
 }
 
-static void queue_add_twoqueue(struct policy *p, struct list_head *elt);
-static bool any_free_cblocks(struct policy *p)
+static void queue_add_twoqueue(struct basic_policy *basic, struct list_head *elt);
+static bool any_free_cblocks(struct basic_policy *basic)
 {
-	if (IS_TWOQUEUE(p)) {
+	if (IS_TWOQUEUE(basic)) {
 		/*
 		 * Only allow a certain amount of the total cache size in queue 0
 		 * (cblocks with hit count 1).
 		 */
-		if (p->queues.twoqueue_q0_size == p->queues.twoqueue_q0_max_elts)
+		if (basic->queues.twoqueue_q0_size == basic->queues.twoqueue_q0_max_elts)
 			return false;
 	}
 
-	return !queue_empty(&p->queues.free);
+	return !queue_empty(&basic->queues.free);
 }
 
 /*----------------------------------------------------------------*/
@@ -539,23 +539,23 @@ static struct common_entry *__lookup_common_entry(struct hash *hash, dm_oblock_t
 	return NULL;
 }
 
-static struct basic_cache_entry *lookup_cache_entry(struct policy *p,
+static struct basic_cache_entry *lookup_cache_entry(struct basic_policy *basic,
 						    dm_oblock_t oblock)
 {
-	struct common_entry *ce = IS_NOOP(p) ? NULL :
-		__lookup_common_entry(&p->chash, oblock);
+	struct common_entry *ce = IS_NOOP(basic) ? NULL :
+		__lookup_common_entry(&basic->chash, oblock);
 
 	return ce ? container_of(ce, struct basic_cache_entry, ce) : NULL;
 }
 
-static void insert_cache_hash_entry(struct policy *p, struct basic_cache_entry *e)
+static void insert_cache_hash_entry(struct basic_policy *basic, struct basic_cache_entry *e)
 {
-	unsigned h = hash_64(from_oblock(e->ce.oblock), p->chash.hash_bits);
+	unsigned h = hash_64(from_oblock(e->ce.oblock), basic->chash.hash_bits);
 
-	hlist_add_head(&e->ce.hlist, &p->chash.table[h]);
+	hlist_add_head(&e->ce.hlist, &basic->chash.table[h]);
 }
 
-static void remove_cache_hash_entry(struct policy *p, struct basic_cache_entry *e)
+static void remove_cache_hash_entry(struct basic_policy *basic, struct basic_cache_entry *e)
 {
 	hlist_del(&e->ce.hlist);
 }
@@ -622,38 +622,38 @@ pop_add_and_insert_track_queue_entry(struct track_queue *q, dm_oblock_t oblock)
 	return r;
 }
 
-static unsigned ctype_threshold(struct policy *p, unsigned th)
+static unsigned ctype_threshold(struct basic_policy *basic, unsigned th)
 {
-	return th << (p->queues.ctype == T_HITS ? 0 : p->block_shift);
+	return th << (basic->queues.ctype == T_HITS ? 0 : basic->block_shift);
 }
 
-static void init_promote_threshold(struct policy *p, bool cache_full)
+static void init_promote_threshold(struct basic_policy *basic, bool cache_full)
 {
-	p->promote_threshold[0] = ctype_threshold(p, READ_PROMOTE_THRESHOLD);
-	p->promote_threshold[1] = ctype_threshold(p, WRITE_PROMOTE_THRESHOLD);
+	basic->promote_threshold[0] = ctype_threshold(basic, READ_PROMOTE_THRESHOLD);
+	basic->promote_threshold[1] = ctype_threshold(basic, WRITE_PROMOTE_THRESHOLD);
 
 	if (cache_full) {
-		p->promote_threshold[0] += ((p->cache_count[p->queues.ctype][0] * READ_PROMOTE_THRESHOLD) << 5) / from_cblock(p->cache_size);
-		p->promote_threshold[1] += ((p->cache_count[p->queues.ctype][1] * WRITE_PROMOTE_THRESHOLD) << 6) / from_cblock(p->cache_size);
+		basic->promote_threshold[0] += ((basic->cache_count[basic->queues.ctype][0] * READ_PROMOTE_THRESHOLD) << 5) / from_cblock(basic->cache_size);
+		basic->promote_threshold[1] += ((basic->cache_count[basic->queues.ctype][1] * WRITE_PROMOTE_THRESHOLD) << 6) / from_cblock(basic->cache_size);
 	}
 }
 
-static void calc_rw_threshold(struct policy *p)
+static void calc_rw_threshold(struct basic_policy *basic)
 {
-	if (++p->hits > p->calc_threshold_hits && !any_free_cblocks(p)) {
-		p->hits = 0;
-		init_promote_threshold(p, true);
+	if (++basic->hits > basic->calc_threshold_hits && !any_free_cblocks(basic)) {
+		basic->hits = 0;
+		init_promote_threshold(basic, true);
 
 /* FIXME:
 		pr_alert("promote thresholds = %u/%u queue stats = %u/%u\n",
-			 p->promote_threshold[0], p->promote_threshold[1], p->queues.pre.size, p->queues.post.size);
+			 basic->promote_threshold[0], basic->promote_threshold[1], basic->queues.pre.size, basic->queues.post.size);
 */
 	}
 }
 
 /* Add or update track queue entry. */
 static struct track_queue_entry *
-update_track_queue(struct policy *p, struct track_queue *q, dm_oblock_t oblock,
+update_track_queue(struct basic_policy *basic, struct track_queue *q, dm_oblock_t oblock,
 		   int rw, unsigned hits, sector_t sectors)
 {
 	struct track_queue_entry *r = lookup_track_queue_entry(q, oblock);
@@ -702,37 +702,37 @@ static void get_any_counts_from_track_queue(struct track_queue *q,
 	}
 }
 
-static unsigned sum_count(struct policy *p, struct common_entry *ce, enum count_type t)
+static unsigned sum_count(struct basic_policy *basic, struct common_entry *ce, enum count_type t)
 {
-	return (ce->count[t][0] + ce->count[t][1]) >> (t == T_HITS ? 0 : p->block_shift);
+	return (ce->count[t][0] + ce->count[t][1]) >> (t == T_HITS ? 0 : basic->block_shift);
 }
 
 /*----------------------------------------------------------------------------*/
 
 /* queue_add_.*() functions. */
-static void __queue_add_default(struct policy *p, struct list_head *elt,
+static void __queue_add_default(struct basic_policy *basic, struct list_head *elt,
 				bool to_head)
 {
-	struct list_head *q = &p->queues.used;
+	struct list_head *q = &basic->queues.used;
 	struct basic_cache_entry *e = list_entry(elt, struct basic_cache_entry, ce.list);
 
 	to_head ? queue_add(q, elt) : queue_add_tail(q, elt);
-	queue_add_tail(&p->queues.walk, &e->walk);
+	queue_add_tail(&basic->queues.walk, &e->walk);
 }
 
-static void queue_add_default(struct policy *p, struct list_head *elt)
+static void queue_add_default(struct basic_policy *basic, struct list_head *elt)
 {
-	__queue_add_default(p, elt, true);
+	__queue_add_default(basic, elt, true);
 }
 
-static void queue_add_default_tail(struct policy *p, struct list_head *elt)
+static void queue_add_default_tail(struct basic_policy *basic, struct list_head *elt)
 {
-	__queue_add_default(p, elt, false);
+	__queue_add_default(basic, elt, false);
 }
 
-static void queue_add_filo_mru(struct policy *p, struct list_head *elt)
+static void queue_add_filo_mru(struct basic_policy *basic, struct list_head *elt)
 {
-	queue_add_default(p, elt);
+	queue_add_default(basic, elt);
 }
 
 static u32 __make_key(u32 k, bool is_lfu)
@@ -744,12 +744,12 @@ static u32 __make_key(u32 k, bool is_lfu)
 	return is_lfu ? ~k : k;
 }
 
-static void __queue_add_lfu_mfu(struct policy *p, struct list_head *elt,
+static void __queue_add_lfu_mfu(struct basic_policy *basic, struct list_head *elt,
 				bool is_lfu, enum count_type ctype)
 {
 	struct list_head *head;
 	struct basic_cache_entry *e = list_entry(elt, struct basic_cache_entry, ce.list);
-	u32 key = __make_key(sum_count(p, &e->ce, ctype), is_lfu);
+	u32 key = __make_key(sum_count(basic, &e->ce, ctype), is_lfu);
 
 	/*
 	 * Memorize key for deletion (e->ce.count[T_HITS]/e->ce.count[T_SECTORS]
@@ -766,7 +766,7 @@ static void __queue_add_lfu_mfu(struct policy *p, struct list_head *elt,
 	 *
 	 * FIXME: replace with priority heap.
 	 */
-	head = btree_lookup32(&p->queues.fu_head, key);
+	head = btree_lookup32(&basic->queues.fu_head, key);
 	if (head) {
 		/* Always add to the end where we'll pop cblocks off */
 		queue_add_tail(head, elt);
@@ -776,62 +776,62 @@ static void __queue_add_lfu_mfu(struct policy *p, struct list_head *elt,
 			 * For lfu, point to added new head, so that
 			 * the older entry will get popped first.
 			 */
-			int r = btree_update32(&p->queues.fu_head, key, (void *) elt);
+			int r = btree_update32(&basic->queues.fu_head, key, (void *) elt);
 
 			BUG_ON(r);
 		}
 
 	} else {
 		/* New key, insert into tree. */
-		int r = btree_insert32(&p->queues.fu_head, key, (void *) elt, GFP_KERNEL);
+		int r = btree_insert32(&basic->queues.fu_head, key, (void *) elt, GFP_KERNEL);
 
 		BUG_ON(r);
 		queue_init(elt);
 	}
 
-	queue_add_tail(&p->queues.walk, &e->walk);
+	queue_add_tail(&basic->queues.walk, &e->walk);
 }
 
-static void queue_add_lfu(struct policy *p, struct list_head *elt)
+static void queue_add_lfu(struct basic_policy *basic, struct list_head *elt)
 {
-	__queue_add_lfu_mfu(p, elt, true, T_HITS);
+	__queue_add_lfu_mfu(basic, elt, true, T_HITS);
 }
 
-static void queue_add_mfu(struct policy *p, struct list_head *elt)
+static void queue_add_mfu(struct basic_policy *basic, struct list_head *elt)
 {
-	__queue_add_lfu_mfu(p, elt, false, T_HITS);
+	__queue_add_lfu_mfu(basic, elt, false, T_HITS);
 }
 
-static void queue_add_lfu_ws(struct policy *p, struct list_head *elt)
+static void queue_add_lfu_ws(struct basic_policy *basic, struct list_head *elt)
 {
-	__queue_add_lfu_mfu(p, elt, true, T_SECTORS);
+	__queue_add_lfu_mfu(basic, elt, true, T_SECTORS);
 }
 
-static void queue_add_mfu_ws(struct policy *p, struct list_head *elt)
+static void queue_add_mfu_ws(struct basic_policy *basic, struct list_head *elt)
 {
-	__queue_add_lfu_mfu(p, elt, false, T_SECTORS);
+	__queue_add_lfu_mfu(basic, elt, false, T_SECTORS);
 }
 
-static unsigned __select_multiqueue(struct policy *p, struct basic_cache_entry *e,
+static unsigned __select_multiqueue(struct basic_policy *basic, struct basic_cache_entry *e,
 				    enum count_type ctype)
 {
-	return min((unsigned) ilog2(sum_count(p, &e->ce, ctype)), p->queues.nr_mqueues - 1U);
+	return min((unsigned) ilog2(sum_count(basic, &e->ce, ctype)), basic->queues.nr_mqueues - 1U);
 }
 
-static unsigned __get_twoqueue(struct policy *p, struct basic_cache_entry *e)
+static unsigned __get_twoqueue(struct basic_policy *basic, struct basic_cache_entry *e)
 {
-	return sum_count(p, &e->ce, T_HITS) > 1 ? 1 : 0;
+	return sum_count(basic, &e->ce, T_HITS) > 1 ? 1 : 0;
 }
 
-static unsigned long __queue_tmo_multiqueue(struct policy *p)
+static unsigned long __queue_tmo_multiqueue(struct basic_policy *basic)
 {
-	return p->jiffies + p->queues.mq_tmo;
+	return basic->jiffies + basic->queues.mq_tmo;
 }
 
-static void demote_multiqueues(struct policy *p)
+static void demote_multiqueues(struct basic_policy *basic)
 {
 	struct basic_cache_entry *e;
-	struct list_head *cur = p->queues.mq, *end;
+	struct list_head *cur = basic->queues.mq, *end;
 
 	if (!queue_empty(cur))
 		return;
@@ -840,7 +840,7 @@ static void demote_multiqueues(struct policy *p)
 	 * Start with 2nd queue, because we conditionally move
 	 * from queue to queue - 1
 	 */
-	end = cur + p->queues.nr_mqueues;
+	end = cur + basic->queues.nr_mqueues;
 	while (++cur < end) {
 		while (!queue_empty(cur)) {
 			/* Reference head element. */
@@ -850,9 +850,9 @@ static void demote_multiqueues(struct policy *p)
 			 * If expired, move entry from head of higher prio
 			 * queue to tail of lower prio one.
 			 */
-			if (time_after_eq(p->jiffies, e->expire)) {
+			if (time_after_eq(basic->jiffies, e->expire)) {
 				queue_move_tail(cur - 1, &e->ce.list);
-				e->expire = __queue_tmo_multiqueue(p);
+				e->expire = __queue_tmo_multiqueue(basic);
 
 			} else
 				break;
@@ -860,61 +860,61 @@ static void demote_multiqueues(struct policy *p)
 	}
 }
 
-static void __queue_add_multiqueue(struct policy *p, struct list_head *elt,
+static void __queue_add_multiqueue(struct basic_policy *basic, struct list_head *elt,
 				   enum count_type ctype)
 {
 	struct basic_cache_entry *e = list_entry(elt, struct basic_cache_entry, ce.list);
-	unsigned queue = __select_multiqueue(p, e, ctype);
+	unsigned queue = __select_multiqueue(basic, e, ctype);
 
-	e->expire = __queue_tmo_multiqueue(p);
-	queue_add_tail(&p->queues.mq[queue], &e->ce.list);
-	queue_add_tail(&p->queues.walk, &e->walk);
+	e->expire = __queue_tmo_multiqueue(basic);
+	queue_add_tail(&basic->queues.mq[queue], &e->ce.list);
+	queue_add_tail(&basic->queues.walk, &e->walk);
 }
 
-static void queue_add_multiqueue(struct policy *p, struct list_head *elt)
+static void queue_add_multiqueue(struct basic_policy *basic, struct list_head *elt)
 {
-	__queue_add_multiqueue(p, elt, T_HITS);
+	__queue_add_multiqueue(basic, elt, T_HITS);
 }
 
-static void queue_add_multiqueue_ws(struct policy *p, struct list_head *elt)
+static void queue_add_multiqueue_ws(struct basic_policy *basic, struct list_head *elt)
 {
-	__queue_add_multiqueue(p, elt, T_SECTORS);
+	__queue_add_multiqueue(basic, elt, T_SECTORS);
 }
 
-static void queue_add_q2(struct policy *p, struct list_head *elt)
+static void queue_add_q2(struct basic_policy *basic, struct list_head *elt)
 {
 	struct basic_cache_entry *e = list_entry(elt, struct basic_cache_entry, ce.list);
 
-	queue_add_tail(&p->queues.mq[0], &e->ce.list);
-	queue_add_tail(&p->queues.walk, &e->walk);
+	queue_add_tail(&basic->queues.mq[0], &e->ce.list);
+	queue_add_tail(&basic->queues.walk, &e->walk);
 }
 
-static void queue_add_twoqueue(struct policy *p, struct list_head *elt)
+static void queue_add_twoqueue(struct basic_policy *basic, struct list_head *elt)
 {
 	unsigned queue;
 	struct basic_cache_entry *e = list_entry(elt, struct basic_cache_entry, ce.list);
 
-	queue = e->saved = __get_twoqueue(p, e);
+	queue = e->saved = __get_twoqueue(basic, e);
 	if (!queue)
-		p->queues.twoqueue_q0_size++;
+		basic->queues.twoqueue_q0_size++;
 
-	queue_add_tail(&p->queues.mq[queue], &e->ce.list);
-	queue_add_tail(&p->queues.walk, &e->walk);
+	queue_add_tail(&basic->queues.mq[queue], &e->ce.list);
+	queue_add_tail(&basic->queues.walk, &e->walk);
 }
 
-static void queue_add_dumb(struct policy *p, struct list_head *elt)
+static void queue_add_dumb(struct basic_policy *basic, struct list_head *elt)
 {
-	queue_add_default_tail(p, elt);
+	queue_add_default_tail(basic, elt);
 }
 
-static void queue_add_noop(struct policy *p, struct list_head *elt)
+static void queue_add_noop(struct basic_policy *basic, struct list_head *elt)
 {
-	queue_add_default_tail(p, elt); /* Never called. */
+	queue_add_default_tail(basic, elt); /* Never called. */
 }
 /*----------------------------------------------------------------------------*/
 
 /* queue_del_.*() functions. */
-static void queue_del_default(struct policy *p, struct list_head *elt)
+static void queue_del_default(struct basic_policy *basic, struct list_head *elt)
 {
 	struct basic_cache_entry *e = list_entry(elt, struct basic_cache_entry, ce.list);
 
@@ -922,24 +922,24 @@ static void queue_del_default(struct policy *p, struct list_head *elt)
 	queue_del(&e->walk);
 }
 
-static void queue_del_fifo_filo(struct policy *p, struct list_head *elt)
+static void queue_del_fifo_filo(struct basic_policy *basic, struct list_head *elt)
 {
-	queue_del_default(p, elt);
+	queue_del_default(basic, elt);
 }
 
-static void __queue_del_lfu_mfu(struct policy *p, struct list_head *elt)
+static void __queue_del_lfu_mfu(struct basic_policy *basic, struct list_head *elt)
 {
 	struct list_head *head;
 	struct basic_cache_entry *e = list_entry(elt, struct basic_cache_entry, ce.list);
 	/* Retrieve saved key which has been saved by queue_add_lfu_mfu(). */
 	u32 key = e->saved;
 
-	head = btree_lookup32(&p->queues.fu_head, key);
+	head = btree_lookup32(&basic->queues.fu_head, key);
 	BUG_ON(!head);
 	if (head == elt) {
 		/* Need to remove head, because it's the only element. */
 		if (queue_empty(head)) {
-			struct list_head *h = btree_remove32(&p->queues.fu_head, key);
+			struct list_head *h = btree_remove32(&basic->queues.fu_head, key);
 
 			BUG_ON(!h);
 
@@ -949,7 +949,7 @@ static void __queue_del_lfu_mfu(struct policy *p, struct list_head *elt)
 			/* Update node to point to next entry as new head. */
 			head = head->next;
 			queue_del(elt);
-			r = btree_update32(&p->queues.fu_head, key, (void *) head);
+			r = btree_update32(&basic->queues.fu_head, key, (void *) head);
 			BUG_ON(r);
 		}
 
@@ -960,25 +960,25 @@ static void __queue_del_lfu_mfu(struct policy *p, struct list_head *elt)
 	queue_del(&e->walk);
 }
 
-static void queue_del_lfu(struct policy *p, struct list_head *elt)
+static void queue_del_lfu(struct basic_policy *basic, struct list_head *elt)
 {
-	return __queue_del_lfu_mfu(p, elt);
+	return __queue_del_lfu_mfu(basic, elt);
 }
 
-static void queue_del_mfu(struct policy *p, struct list_head *elt)
+static void queue_del_mfu(struct basic_policy *basic, struct list_head *elt)
 {
-	return __queue_del_lfu_mfu(p, elt);
+	return __queue_del_lfu_mfu(basic, elt);
 }
 
-static void queue_del_multiqueue(struct policy *p, struct list_head *elt)
+static void queue_del_multiqueue(struct basic_policy *basic, struct list_head *elt)
 {
 	struct basic_cache_entry *e = list_entry(elt, struct basic_cache_entry, ce.list);
 
-	if (IS_TWOQUEUE(p)) {
+	if (IS_TWOQUEUE(basic)) {
 		unsigned queue = e->saved;
 
 		if (!queue)
-			p->queues.twoqueue_q0_size--;
+			basic->queues.twoqueue_q0_size--;
 	}
 
 	queue_del(&e->ce.list);
@@ -987,9 +987,9 @@ static void queue_del_multiqueue(struct policy *p, struct list_head *elt)
 /*----------------------------------------------------------------------------*/
 
 /* queue_evict_.*() functions. */
-static struct list_head *queue_evict_default(struct policy *p)
+static struct list_head *queue_evict_default(struct basic_policy *basic)
 {
-	struct list_head *r = queue_pop(&p->queues.used);
+	struct list_head *r = queue_pop(&basic->queues.used);
 	struct basic_cache_entry *e = list_entry(r, struct basic_cache_entry, ce.list);
 
 	queue_del(&e->walk);
@@ -997,18 +997,18 @@ static struct list_head *queue_evict_default(struct policy *p)
 	return r;
 }
 
-static struct list_head *queue_evict_lfu_mfu(struct policy *p)
+static struct list_head *queue_evict_lfu_mfu(struct basic_policy *basic)
 {
 	u32 k;
 	struct list_head *r;
 	struct basic_cache_entry *e;
 
 	/* This'll retrieve lfu/mfu entry because of __make_key(). */
-	r = btree_last32(&p->queues.fu_head, &k);
+	r = btree_last32(&basic->queues.fu_head, &k);
 	BUG_ON(!r);
 
 	if (queue_empty(r))
-		r = btree_remove32(&p->queues.fu_head, k);
+		r = btree_remove32(&basic->queues.fu_head, k);
 
 	else {
 		/* Retrieve last element in order to minimize btree updates. */
@@ -1024,9 +1024,9 @@ static struct list_head *queue_evict_lfu_mfu(struct policy *p)
 	return r;
 }
 
-static struct list_head *queue_evict_random(struct policy *p)
+static struct list_head *queue_evict_random(struct basic_policy *basic)
 {
-	struct list_head *r = p->queues.used.next;
+	struct list_head *r = basic->queues.used.next;
 	struct basic_cache_entry *e;
 	dm_block_t off = prandom_u32();
 
@@ -1034,11 +1034,11 @@ static struct list_head *queue_evict_random(struct policy *p)
 
 	/* FIXME: cblock_t is 32 bit for the time being. */
 	/* Be prepared for large caches ;-) */
-	if (from_cblock(p->cache_size) >= UINT_MAX)
+	if (from_cblock(basic->cache_size) >= UINT_MAX)
 		off |= ((dm_block_t) prandom_u32() << 32);
 
 	/* FIXME: overhead walking list. */
-	off = do_div(off, from_cblock(p->cache_size));
+	off = do_div(off, from_cblock(basic->cache_size));
 	while (off--)
 		r = r->next;
 
@@ -1049,18 +1049,18 @@ static struct list_head *queue_evict_random(struct policy *p)
 	return r;
 }
 
-static struct list_head *queue_evict_multiqueue(struct policy *p)
+static struct list_head *queue_evict_multiqueue(struct basic_policy *basic)
 {
-	struct list_head *cur = p->queues.mq - 1, /* -1 because of ++cur below. */
-			 *end = p->queues.mq + p->queues.nr_mqueues;
+	struct list_head *cur = basic->queues.mq - 1, /* -1 because of ++cur below. */
+			 *end = basic->queues.mq + basic->queues.nr_mqueues;
 
 	while (++cur < end) {
 		if (!queue_empty(cur)) {
 			struct basic_cache_entry *e;
 			struct list_head *r;
 
-			if (IS_TWOQUEUE(p) && cur == p->queues.mq)
-				p->queues.twoqueue_q0_size--;
+			if (IS_TWOQUEUE(basic) && cur == basic->queues.mq)
+				basic->queues.twoqueue_q0_size--;
 
 			r = queue_pop(cur);
 			e = list_entry(r, struct basic_cache_entry, ce.list);
@@ -1069,16 +1069,16 @@ static struct list_head *queue_evict_multiqueue(struct policy *p)
 			return r;
 		}
 
-		if (IS_MULTIQUEUE(p))
+		if (IS_MULTIQUEUE(basic))
 			break;
 	}
 
 	return NULL;
 }
 
-static struct list_head *queue_evict_q2_twoqueue(struct policy *p)
+static struct list_head *queue_evict_q2_twoqueue(struct basic_policy *basic)
 {
-	return queue_evict_multiqueue(p);
+	return queue_evict_multiqueue(basic);
 }
 
 /*----------------------------------------------------------------------------*/
@@ -1086,7 +1086,7 @@ static struct list_head *queue_evict_q2_twoqueue(struct policy *p)
 /*
  * This doesn't allocate the block.
  */
-static int __find_free_cblock(struct policy *p, unsigned begin, unsigned end,
+static int __find_free_cblock(struct basic_policy *basic, unsigned begin, unsigned end,
 			      dm_cblock_t *result, unsigned *last_word)
 {
 	int r = -ENOSPC;
@@ -1096,10 +1096,10 @@ static int __find_free_cblock(struct policy *p, unsigned begin, unsigned end,
 		/*
 		 * ffz is undefined if no zero exists
 		 */
-		if (p->allocation_bitset[w] != ULONG_MAX) {
+		if (basic->allocation_bitset[w] != ULONG_MAX) {
 			*last_word = w;
-			*result = to_cblock((w * BITS_PER_LONG) + ffz(p->allocation_bitset[w]));
-			if (from_cblock(*result) < from_cblock(p->cache_size))
+			*result = to_cblock((w * BITS_PER_LONG) + ffz(basic->allocation_bitset[w]));
+			if (from_cblock(*result) < from_cblock(basic->cache_size))
 				r = 0;
 
 			break;
@@ -1109,67 +1109,67 @@ static int __find_free_cblock(struct policy *p, unsigned begin, unsigned end,
 	return r;
 }
 
-static int find_free_cblock(struct policy *p, dm_cblock_t *result)
+static int find_free_cblock(struct basic_policy *basic, dm_cblock_t *result)
 {
-	int r = __find_free_cblock(p, p->find_free_last_word, p->find_free_nr_words, result, &p->find_free_last_word);
+	int r = __find_free_cblock(basic, basic->find_free_last_word, basic->find_free_nr_words, result, &basic->find_free_last_word);
 
-	if (r == -ENOSPC && p->find_free_last_word)
-		r = __find_free_cblock(p, 0, p->find_free_last_word, result, &p->find_free_last_word);
+	if (r == -ENOSPC && basic->find_free_last_word)
+		r = __find_free_cblock(basic, 0, basic->find_free_last_word, result, &basic->find_free_last_word);
 
 	return r;
 }
 
-static void alloc_cblock_insert_cache_and_count_entry(struct policy *p, struct basic_cache_entry *e)
+static void alloc_cblock_insert_cache_and_count_entry(struct basic_policy *basic, struct basic_cache_entry *e)
 {
 	unsigned t, u, end = ARRAY_SIZE(e->ce.count[T_HITS]);
 
-	alloc_cblock(p, e->cblock);
-	insert_cache_hash_entry(p, e);
+	alloc_cblock(basic, e->cblock);
+	insert_cache_hash_entry(basic, e);
 
-	if (IS_DUMB(p) || IS_NOOP(p))
+	if (IS_DUMB(basic) || IS_NOOP(basic))
 		return;
 
 	for (t = 0; t < end; t++)
 		for (u = 0; u < end; u++)
-			p->cache_count[t][u] += e->ce.count[t][u];
+			basic->cache_count[t][u] += e->ce.count[t][u];
 }
 
-static void add_cache_entry(struct policy *p, struct basic_cache_entry *e)
+static void add_cache_entry(struct basic_policy *basic, struct basic_cache_entry *e)
 {
-	p->queues.fns->add(p, &e->ce.list);
-	alloc_cblock_insert_cache_and_count_entry(p, e);
+	basic->queues.fns->add(basic, &e->ce.list);
+	alloc_cblock_insert_cache_and_count_entry(basic, e);
 }
 
-static void remove_cache_entry(struct policy *p, struct basic_cache_entry *e)
+static void remove_cache_entry(struct basic_policy *basic, struct basic_cache_entry *e)
 {
 	unsigned t, u, end = ARRAY_SIZE(e->ce.count[T_HITS]);
 
-	remove_cache_hash_entry(p, e);
-	free_cblock(p, e->cblock);
+	remove_cache_hash_entry(basic, e);
+	free_cblock(basic, e->cblock);
 
-	if (IS_DUMB(p) || IS_NOOP(p))
+	if (IS_DUMB(basic) || IS_NOOP(basic))
 		return;
 
 	for (t = 0; t < end; t++)
 		for (u = 0; u < end; u++)
-			p->cache_count[t][u] -= e->ce.count[t][u];
+			basic->cache_count[t][u] -= e->ce.count[t][u];
 }
 
-static struct basic_cache_entry *evict_cache_entry(struct policy *p)
+static struct basic_cache_entry *evict_cache_entry(struct basic_policy *basic)
 {
 	struct basic_cache_entry *r;
-	struct list_head *elt = p->queues.fns->evict(p);
+	struct list_head *elt = basic->queues.fns->evict(basic);
 
 	if (elt) {
 		r = list_entry(elt, struct basic_cache_entry, ce.list);
-		remove_cache_entry(p, r);
+		remove_cache_entry(basic, r);
 	} else
 		r = NULL;
 
 	return r;
 }
 
-static void update_cache_entry(struct policy *p, struct basic_cache_entry *e,
+static void update_cache_entry(struct basic_policy *basic, struct basic_cache_entry *e,
 			       struct bio *bio, struct policy_result *result)
 {
 	int rw;
@@ -1177,7 +1177,7 @@ static void update_cache_entry(struct policy *p, struct basic_cache_entry *e,
 	result->op = POLICY_HIT;
 	result->cblock = e->cblock;
 
-	if (IS_DUMB(p) || IS_NOOP(p))
+	if (IS_DUMB(basic) || IS_NOOP(basic))
 		return;
 
 	rw = to_rw(bio);
@@ -1189,34 +1189,34 @@ static void update_cache_entry(struct policy *p, struct basic_cache_entry *e,
 	 * No queue deletion and reinsertion needed with fifo/filo; ie.
 	 * avoid queue reordering for those.
 	 */
-	if (!IS_FIFO_FILO(p)) {
-		p->queues.fns->del(p, &e->ce.list);
-		p->queues.fns->add(p, &e->ce.list);
+	if (!IS_FIFO_FILO(basic)) {
+		basic->queues.fns->del(basic, &e->ce.list);
+		basic->queues.fns->add(basic, &e->ce.list);
 	}
 }
 
-static void get_cache_block(struct policy *p, dm_oblock_t oblock, struct bio *bio,
+static void get_cache_block(struct basic_policy *basic, dm_oblock_t oblock, struct bio *bio,
 			    struct policy_result *result)
 {
 	int rw = to_rw(bio);
 	struct basic_cache_entry *e;
 
-	if (queue_empty(&p->queues.free)) {
-		if (IS_MULTIQUEUE(p))
-			demote_multiqueues(p);
+	if (queue_empty(&basic->queues.free)) {
+		if (IS_MULTIQUEUE(basic))
+			demote_multiqueues(basic);
 
-		e = evict_cache_entry(p);
+		e = evict_cache_entry(basic);
 		if (!e)
 			return;
 
 		/* Memorize hits and sectors of just evicted entry on out queue. */
-		if (!IS_DUMB(p)) {
+		if (!IS_DUMB(basic)) {
 			/* Reads. */
-			update_track_queue(p, &p->queues.post, e->ce.oblock, 0,
+			update_track_queue(basic, &basic->queues.post, e->ce.oblock, 0,
 					   e->ce.count[T_HITS][0],
 					   e->ce.count[T_SECTORS][0]);
 			/* Writes. */
-			update_track_queue(p, &p->queues.post, e->ce.oblock, 1,
+			update_track_queue(basic, &basic->queues.post, e->ce.oblock, 1,
 					   e->ce.count[T_HITS][1],
 					   e->ce.count[T_SECTORS][1]);
 		}
@@ -1227,9 +1227,9 @@ static void get_cache_block(struct policy *p, dm_oblock_t oblock, struct bio *bi
 	} else {
 		int r;
 
-		e = alloc_cache_entry(p);
+		e = alloc_cache_entry(basic);
 		BUG_ON(!e);
-		r = find_free_cblock(p, &e->cblock);
+		r = find_free_cblock(basic, &e->cblock);
 		BUG_ON(r);
 
 		result->op = POLICY_NEW;
@@ -1240,40 +1240,40 @@ static void get_cache_block(struct policy *p, dm_oblock_t oblock, struct bio *bi
 	 * retrieve hit counts and sectors from track queues and delete
 	 * the respective tracking entries.
 	 */
-	if (!IS_DUMB(p)) {
+	if (!IS_DUMB(basic)) {
 		memset(&e->ce.count, 0, sizeof(e->ce.count));
 		e->ce.count[T_HITS][rw] = 1;
 		e->ce.count[T_SECTORS][rw] = bio_sectors(bio);
-		get_any_counts_from_track_queue(&p->queues.pre, e, oblock);
-		get_any_counts_from_track_queue(&p->queues.post, e, oblock);
+		get_any_counts_from_track_queue(&basic->queues.pre, e, oblock);
+		get_any_counts_from_track_queue(&basic->queues.post, e, oblock);
 	}
 
 	result->cblock = e->cblock;
 	e->ce.oblock = oblock;
-	add_cache_entry(p, e);
+	add_cache_entry(basic, e);
 }
 
-static bool in_cache(struct policy *p, dm_oblock_t oblock, struct bio *bio, struct policy_result *result)
+static bool in_cache(struct basic_policy *basic, dm_oblock_t oblock, struct bio *bio, struct policy_result *result)
 {
-	struct basic_cache_entry *e = lookup_cache_entry(p, oblock);
+	struct basic_cache_entry *e = lookup_cache_entry(basic, oblock);
 
 	if (e) {
 		/* Cache hit: update entry on queues, increment its hit count */
-		update_cache_entry(p, e, bio, result);
+		update_cache_entry(basic, e, bio, result);
 		return true;
 	}
 
 	return false;
 }
 
-static bool should_promote(struct policy *p, struct track_queue_entry *tqe,
+static bool should_promote(struct basic_policy *basic, struct track_queue_entry *tqe,
 			   dm_oblock_t oblock, int rw, bool discarded_oblock,
 			   struct policy_result *result)
 {
 	BUG_ON(!tqe);
-	calc_rw_threshold(p);
+	calc_rw_threshold(basic);
 
-	if (discarded_oblock && any_free_cblocks(p))
+	if (discarded_oblock && any_free_cblocks(basic))
 		/*
 		 * We don't need to do any copying at all, so give this a
 		 * very low threshold.  In practice this only triggers
@@ -1281,85 +1281,85 @@ static bool should_promote(struct policy *p, struct track_queue_entry *tqe,
 		 */
 		return true;
 
-	return tqe->ce.count[p->queues.ctype][rw] >= p->promote_threshold[rw];
+	return tqe->ce.count[basic->queues.ctype][rw] >= basic->promote_threshold[rw];
 }
 
-static void map_prerequisites(struct policy *p, struct bio *bio)
+static void map_prerequisites(struct basic_policy *basic, struct bio *bio)
 {
 	/* Update io tracker. */
-	iot_update_stats(&p->tracker, bio);
-	iot_check_for_pattern_switch(&p->tracker, p->block_size);
+	iot_update_stats(&basic->tracker, bio);
+	iot_check_for_pattern_switch(&basic->tracker, basic->block_size);
 
 	/* Get start jiffies needed for time based queue demotion. */
-	if (IS_MULTIQUEUE(p))
-		p->jiffies = get_jiffies_64();
+	if (IS_MULTIQUEUE(basic))
+		basic->jiffies = get_jiffies_64();
 }
 
-static int map(struct policy *p, dm_oblock_t oblock,
+static int map(struct basic_policy *basic, dm_oblock_t oblock,
 	       bool can_block, bool can_migrate, bool discarded_oblock,
 	       struct bio *bio, struct policy_result *result)
 {
 	int rw = to_rw(bio);
 	struct track_queue_entry *tqe = NULL;
 
-	if (IS_NOOP(p))
+	if (IS_NOOP(basic))
 		return 0;
 
-	if (in_cache(p, oblock, bio, result))
+	if (in_cache(basic, oblock, bio, result))
 		return 0;
 
-	if (!IS_DUMB(p))
+	if (!IS_DUMB(basic))
 		/* Record hits on pre cache track queue. */
-		tqe = update_track_queue(p, &p->queues.pre, oblock, rw, 1, bio_sectors(bio));
+		tqe = update_track_queue(basic, &basic->queues.pre, oblock, rw, 1, bio_sectors(bio));
 
 	if (!can_migrate)
 		return -EWOULDBLOCK;
 
-	else if (!IS_DUMB(p) && iot_sequential_pattern(&p->tracker))
+	else if (!IS_DUMB(basic) && iot_sequential_pattern(&basic->tracker))
 		;
 
-	else if (IS_DUMB(p) || should_promote(p, tqe, oblock, rw, discarded_oblock, result))
-		get_cache_block(p, oblock, bio, result);
+	else if (IS_DUMB(basic) || should_promote(basic, tqe, oblock, rw, discarded_oblock, result))
+		get_cache_block(basic, oblock, bio, result);
 
 	return 0;
 }
 
 /* Public interface (see dm-cache-policy.h */
-static int basic_map(struct dm_cache_policy *pe, dm_oblock_t oblock,
+static int basic_map(struct dm_cache_policy *p, dm_oblock_t oblock,
 		     bool can_block, bool can_migrate, bool discarded_oblock,
 		     struct bio *bio, struct policy_result *result)
 {
 	int r;
-	struct policy *p = to_policy(pe);
+	struct basic_policy *basic = to_basic_policy(p);
 
 	result->op = POLICY_MISS;
 
 	if (can_block)
-		mutex_lock(&p->lock);
+		mutex_lock(&basic->lock);
 
-	else if (!mutex_trylock(&p->lock))
+	else if (!mutex_trylock(&basic->lock))
 		return -EWOULDBLOCK;
 
-	if (!IS_DUMB(p) && !IS_NOOP(p))
-		map_prerequisites(p, bio);
+	if (!IS_DUMB(basic) && !IS_NOOP(basic))
+		map_prerequisites(basic, bio);
 
-	r = map(p, oblock, can_block, can_migrate, discarded_oblock, bio, result);
+	r = map(basic, oblock, can_block, can_migrate, discarded_oblock, bio, result);
 
-	mutex_unlock(&p->lock);
+	mutex_unlock(&basic->lock);
 
 	return r;
 }
 
-static int basic_lookup(struct dm_cache_policy *pe, dm_oblock_t oblock, dm_cblock_t *cblock)
+static int basic_lookup(struct dm_cache_policy *p, dm_oblock_t oblock, dm_cblock_t *cblock)
 {
 	int r;
-	struct policy *p = to_policy(pe);
+	struct basic_policy *basic = to_basic_policy(p);
 	struct basic_cache_entry *e;
 
-	if (!mutex_trylock(&p->lock))
+	if (!mutex_trylock(&basic->lock))
 		return -EWOULDBLOCK;
 
-	e = lookup_cache_entry(p, oblock);
+	e = lookup_cache_entry(basic, oblock);
 	if (e) {
 		*cblock = e->cblock;
 		r = 0;
@@ -1367,35 +1367,35 @@ static int basic_lookup(struct dm_cache_policy *pe, dm_oblock_t oblock, dm_cbloc
 	} else
 		r = -ENOENT;
 
-	mutex_unlock(&p->lock);
+	mutex_unlock(&basic->lock);
 
 	return r;
 }
 
-static void basic_destroy(struct dm_cache_policy *pe)
+static void basic_destroy(struct dm_cache_policy *p)
 {
-	struct policy *p = to_policy(pe);
+	struct basic_policy *basic = to_basic_policy(p);
 
-	if (IS_LFU_MFU_WS(p))
-		btree_destroy32(&p->queues.fu_head);
+	if (IS_LFU_MFU_WS(basic))
+		btree_destroy32(&basic->queues.fu_head);
 
-	else if (IS_MULTIQUEUE_Q2_TWOQUEUE(p))
-		free_multiqueues(p);
+	else if (IS_MULTIQUEUE_Q2_TWOQUEUE(basic))
+		free_multiqueues(basic);
 
-	free_track_queue(&p->queues.post);
-	free_track_queue(&p->queues.pre);
-	free_bitset(p->allocation_bitset);
-	free_cache_blocks_and_hash(p);
-	kfree(p);
+	free_track_queue(&basic->queues.post);
+	free_track_queue(&basic->queues.pre);
+	free_bitset(basic->allocation_bitset);
+	free_cache_blocks_and_hash(basic);
+	kfree(basic);
 }
 
-static void sort_in_cache_entry(struct policy *p, struct basic_cache_entry *e,
+static void sort_in_cache_entry(struct basic_policy *basic, struct basic_cache_entry *e,
 				bool hint_valid)
 {
 	struct list_head *elt;
 	struct basic_cache_entry *cur;
 
-	list_for_each(elt, &p->queues.used) {
+	list_for_each(elt, &basic->queues.used) {
 		if (!hint_valid)
 			break;
 
@@ -1404,32 +1404,32 @@ static void sort_in_cache_entry(struct policy *p, struct basic_cache_entry *e,
 			break;
 	}
 
-	if (elt == &p->queues.used)
+	if (elt == &basic->queues.used)
 		queue_add_tail(elt, &e->ce.list);
 	else
 		queue_add(elt, &e->ce.list);
 
-	queue_add_tail(&p->queues.walk, &e->walk);
+	queue_add_tail(&basic->queues.walk, &e->walk);
 }
 
-static void add_dirty_entry(struct policy *p, struct basic_cache_entry *e)
+static void add_dirty_entry(struct basic_policy *basic, struct basic_cache_entry *e)
 {
-	if (IS_FILO_MRU(p) || IS_MFU(p))
-		queue_add(&p->queues.dirty, &e->dirty);
+	if (IS_FILO_MRU(basic) || IS_MFU(basic))
+		queue_add(&basic->queues.dirty, &e->dirty);
 	else
-		queue_add_tail(&p->queues.dirty, &e->dirty);
+		queue_add_tail(&basic->queues.dirty, &e->dirty);
 }
 
-static int __set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bool set)
+static int __set_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock, bool set)
 {
 	int r;
-	struct policy *p = to_policy(pe);
+	struct basic_policy *basic = to_basic_policy(p);
 	struct basic_cache_entry *e;
 	const char *caller = set ? "set" : "clear";
 
-	mutex_lock(&p->lock);
+	mutex_lock(&basic->lock);
 
-	e = lookup_cache_entry(p, oblock);
+	e = lookup_cache_entry(basic, oblock);
 	if (!e) {
 		DMWARN("basic_%s_dirty called for a block that isn't in the cache", caller);
 		r = -ENOENT;
@@ -1440,7 +1440,7 @@ static int __set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, boo
 		queue_del(&e->dirty);
 
 		if (set) {
-			add_dirty_entry(p, e);
+			add_dirty_entry(basic, e);
 			r = dirty ? -EINVAL : 0;
 
 		} else
@@ -1448,29 +1448,29 @@ static int __set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, boo
 
 	}
 
-	mutex_unlock(&p->lock);
+	mutex_unlock(&basic->lock);
 
 	return r;
 }
 
-static int basic_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
+static int basic_set_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 {
-	return __set_clear_dirty(pe, oblock, true);
+	return __set_clear_dirty(p, oblock, true);
 }
 
-static int basic_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
+static int basic_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 {
-	return __set_clear_dirty(pe, oblock, false);
+	return __set_clear_dirty(p, oblock, false);
 }
 
-static int basic_load_mapping(struct dm_cache_policy *pe,
+static int basic_load_mapping(struct dm_cache_policy *p,
 			      dm_oblock_t oblock, dm_cblock_t cblock,
 			      void *hint, bool hint_valid)
 {
-	struct policy *p = to_policy(pe);
+	struct basic_policy *basic = to_basic_policy(p);
 	struct basic_cache_entry *e;
 
-	e = alloc_cache_entry(p);
+	e = alloc_cache_entry(basic);
 	if (!e)
 		return -ENOMEM;
 
@@ -1479,7 +1479,7 @@ static int basic_load_mapping(struct dm_cache_policy *pe,
 
 	if (hint_valid) {
 		__le32 *hints = hint;
-		unsigned hint_size = dm_cache_policy_get_hint_size(pe);
+		unsigned hint_size = dm_cache_policy_get_hint_size(p);
 
 		e->ce.count[T_HITS][0] = le32_to_cpu(hints[0]);
 
@@ -1492,37 +1492,37 @@ static int basic_load_mapping(struct dm_cache_policy *pe,
 		}
 	}
 
-	if (IS_MULTIQUEUE(p) || IS_TWOQUEUE(p) || IS_LFU_MFU_WS(p))
-		add_cache_entry(p, e);
+	if (IS_MULTIQUEUE(basic) || IS_TWOQUEUE(basic) || IS_LFU_MFU_WS(basic))
+		add_cache_entry(basic, e);
 
 	else {
-		sort_in_cache_entry(p, e, hint_valid);
-		alloc_cblock_insert_cache_and_count_entry(p, e);
+		sort_in_cache_entry(basic, e, hint_valid);
+		alloc_cblock_insert_cache_and_count_entry(basic, e);
 	}
 
 	return 0;
 }
 
 /* Walk mappings */
-static int basic_walk_mappings(struct dm_cache_policy *pe, policy_walk_fn fn,
+static int basic_walk_mappings(struct dm_cache_policy *p, policy_walk_fn fn,
 			       void *context)
 {
 	int r = 0;
 	unsigned nr = 0;
-	struct policy *p = to_policy(pe);
+	struct basic_policy *basic = to_basic_policy(p);
 	struct basic_cache_entry *e;
 
-	mutex_lock(&p->lock);
+	mutex_lock(&basic->lock);
 
-	list_for_each_entry(e, &p->queues.walk, walk) {
+	list_for_each_entry(e, &basic->queues.walk, walk) {
 		__le32 hints[4];
-		unsigned hint_size = dm_cache_policy_get_hint_size(pe);
+		unsigned hint_size = dm_cache_policy_get_hint_size(p);
 
 		if (hint_size == 4) {
 			unsigned tmp = nr++;
 
-			if (IS_FILO_MRU(p))
-				tmp = from_cblock(p->cache_size) - tmp - 1;
+			if (IS_FILO_MRU(basic))
+				tmp = from_cblock(basic->cache_size) - tmp - 1;
 
 			hints[0] = cpu_to_le32(tmp);
 
@@ -1541,93 +1541,93 @@ static int basic_walk_mappings(struct dm_cache_policy *pe, policy_walk_fn fn,
 			break;
 	}
 
-	mutex_unlock(&p->lock);
+	mutex_unlock(&basic->lock);
 	return r;
 }
 
-static struct basic_cache_entry *__basic_remove_invalidate_mapping(struct policy *p,
+static struct basic_cache_entry *__basic_remove_invalidate_mapping(struct basic_policy *basic,
 								   dm_oblock_t oblock)
 {
-	struct basic_cache_entry *r = lookup_cache_entry(p, oblock);
+	struct basic_cache_entry *r = lookup_cache_entry(basic, oblock);
 
 	if (r) {
-		p->queues.fns->del(p, &r->ce.list);
-		remove_cache_entry(p, r);
+		basic->queues.fns->del(basic, &r->ce.list);
+		remove_cache_entry(basic, r);
 	}
 
 	return r;
 }
 
-static void add_to_free_list(struct policy *p, struct basic_cache_entry *e)
+static void add_to_free_list(struct basic_policy *basic, struct basic_cache_entry *e)
 {
 	queue_del(&e->dirty);
 	memset(&e->ce.count, 0, sizeof(e->ce.count));
-	queue_add_tail(&p->queues.free, &e->ce.list);
-	BUG_ON(!from_cblock(p->nr_cblocks_allocated));
-	p->nr_cblocks_allocated = to_cblock(from_cblock(p->nr_cblocks_allocated) - 1);
+	queue_add_tail(&basic->queues.free, &e->ce.list);
+	BUG_ON(!from_cblock(basic->nr_cblocks_allocated));
+	basic->nr_cblocks_allocated = to_cblock(from_cblock(basic->nr_cblocks_allocated) - 1);
 }
 
-static void basic_remove_mapping(struct dm_cache_policy *pe, dm_oblock_t oblock)
+static void basic_remove_mapping(struct dm_cache_policy *p, dm_oblock_t oblock)
 {
-	struct policy *p = to_policy(pe);
+	struct basic_policy *basic = to_basic_policy(p);
 	struct basic_cache_entry *e;
 
-	mutex_lock(&p->lock);
-	e = __basic_remove_invalidate_mapping(p, oblock);
+	mutex_lock(&basic->lock);
+	e = __basic_remove_invalidate_mapping(basic, oblock);
 	BUG_ON(!e);
-	add_to_free_list(p, e);
-	mutex_unlock(&p->lock);
+	add_to_free_list(basic, e);
+	mutex_unlock(&basic->lock);
 }
 
-static void basic_force_mapping(struct dm_cache_policy *pe,
+static void basic_force_mapping(struct dm_cache_policy *p,
 				dm_oblock_t current_oblock, dm_oblock_t new_oblock)
 {
-	struct policy *p = to_policy(pe);
+	struct basic_policy *basic = to_basic_policy(p);
 	struct basic_cache_entry *e;
 
-	mutex_lock(&p->lock);
-	e = lookup_cache_entry(p, current_oblock);
+	mutex_lock(&basic->lock);
+	e = lookup_cache_entry(basic, current_oblock);
 	if (e) {
-		p->queues.fns->del(p, &e->ce.list);
+		basic->queues.fns->del(basic, &e->ce.list);
 		e->ce.oblock = new_oblock;
 		queue_del(&e->dirty);
-		add_dirty_entry(p, e);
-		p->queues.fns->add(p, &e->ce.list);
+		add_dirty_entry(basic, e);
+		basic->queues.fns->add(basic, &e->ce.list);
 	}
 
-	mutex_unlock(&p->lock);
+	mutex_unlock(&basic->lock);
 }
 
-static int basic_invalidate_mapping(struct dm_cache_policy *pe, dm_oblock_t *oblock, dm_cblock_t *cblock)
+static int basic_invalidate_mapping(struct dm_cache_policy *p, dm_oblock_t *oblock, dm_cblock_t *cblock)
 {
 	int r;
-	struct policy *p = to_policy(pe);
+	struct basic_policy *basic = to_basic_policy(p);
 	struct basic_cache_entry *e;
 
-	mutex_lock(&p->lock);
-	e = __basic_remove_invalidate_mapping(p, *oblock);
+	mutex_lock(&basic->lock);
+	e = __basic_remove_invalidate_mapping(basic, *oblock);
 	if (e) {
 		*cblock = e->cblock;
 		queue_del(&e->dirty);
-		add_to_free_list(p, e);
+		add_to_free_list(basic, e);
 		r = 0;
 
 	} else
 		r = -ENOENT;
 
-	mutex_unlock(&p->lock);
+	mutex_unlock(&basic->lock);
 
 	return r;
 }
 
-static int basic_writeback_work(struct dm_cache_policy *pe, dm_oblock_t *oblock, dm_cblock_t *cblock)
+static int basic_writeback_work(struct dm_cache_policy *p, dm_oblock_t *oblock, dm_cblock_t *cblock)
 {
 	int r;
-	struct policy *p = to_policy(pe);
+	struct basic_policy *basic = to_basic_policy(p);
 	struct basic_cache_entry *e;
-	struct list_head *dirty = &p->queues.dirty;
+	struct list_head *dirty = &basic->queues.dirty;
 
-	mutex_lock(&p->lock);
+	mutex_lock(&basic->lock);
 
 	/* FIXME: best effort with a dirty list. policy specific functions for optimization. */
 	if (!queue_empty(dirty)) {
@@ -1640,21 +1640,21 @@ static int basic_writeback_work(struct dm_cache_policy *pe, dm_oblock_t *oblock,
 	} else
 		r = -ENODATA;
 
-	mutex_unlock(&p->lock);
+	mutex_unlock(&basic->lock);
 
 	return r;
 }
 
-static dm_cblock_t basic_residency(struct dm_cache_policy *pe)
+static dm_cblock_t basic_residency(struct dm_cache_policy *p)
 {
 	/* FIXME: lock mutex, not sure we can block here. */
-	return to_policy(pe)->nr_cblocks_allocated;
+	return to_basic_policy(p)->nr_cblocks_allocated;
 }
 
-static int basic_set_config_value(struct dm_cache_policy *pe,
+static int basic_set_config_value(struct dm_cache_policy *p,
 				  const char *key, const char *value)
 {
-	struct policy *p = to_policy(pe);
+	struct basic_policy *basic = to_basic_policy(p);
 	unsigned long tmp;
 
 	if (kstrtoul(value, 10, &tmp))
@@ -1664,62 +1664,62 @@ static int basic_set_config_value(struct dm_cache_policy *pe,
 		if (tmp > 1)
 			return -EINVAL;
 
-		p->queues.ctype = tmp ? T_HITS : T_SECTORS;
+		basic->queues.ctype = tmp ? T_HITS : T_SECTORS;
 
 	} else if (!strcasecmp(key, "multiqueue_timeout")) {
 		if (tmp < 1 || tmp > 24*3600*1000) /* 1 day max :) */
 			return -EINVAL;
 
-		if (IS_MULTIQUEUE(p)) {
+		if (IS_MULTIQUEUE(basic)) {
 			unsigned long ticks = tmp * HZ / 1000;
 
 			/* Ensure one tick timeout minimum. */
-			p->queues.mq_tmo = ticks ? ticks : 1;
+			basic->queues.mq_tmo = ticks ? ticks : 1;
 
 		}
 
 	} else if (!strcasecmp(key, "random_threshold"))
-		p->tracker.thresholds[PATTERN_RANDOM] = tmp;
+		basic->tracker.thresholds[PATTERN_RANDOM] = tmp;
 	else if (!strcasecmp(key, "sequential_threshold"))
-		p->tracker.thresholds[PATTERN_SEQUENTIAL] = tmp;
+		basic->tracker.thresholds[PATTERN_SEQUENTIAL] = tmp;
 	else
 		return -EINVAL;
 
 	return 0;
 }
 
-static int basic_emit_config_values(struct dm_cache_policy *pe, char *result, unsigned maxlen)
+static int basic_emit_config_values(struct dm_cache_policy *p, char *result, unsigned maxlen)
 {
 	ssize_t sz = 0;
-	struct policy *p = to_policy(pe);
+	struct basic_policy *basic = to_basic_policy(p);
 
 	DMEMIT("8 hits %u multiqueue_timeout %lu random_threshold %lu sequential_threshold %lu",
-	       p->queues.ctype,
-	       p->queues.mq_tmo,
-	       p->tracker.thresholds[PATTERN_RANDOM],
-	       p->tracker.thresholds[PATTERN_SEQUENTIAL]);
+	       basic->queues.ctype,
+	       basic->queues.mq_tmo,
+	       basic->tracker.thresholds[PATTERN_RANDOM],
+	       basic->tracker.thresholds[PATTERN_SEQUENTIAL]);
 
 	return 0;
 }
 
 /* Init the policy plugin interface function pointers. */
-static void init_policy_functions(struct policy *p)
+static void init_policy_functions(struct basic_policy *basic)
 {
-	p->policy.destroy = basic_destroy;
-	p->policy.map = basic_map;
-	p->policy.lookup = basic_lookup;
-	p->policy.set_dirty = basic_set_dirty;
-	p->policy.clear_dirty = basic_clear_dirty;
-	p->policy.load_mapping = basic_load_mapping;
-	p->policy.walk_mappings = basic_walk_mappings;
-	p->policy.remove_mapping = basic_remove_mapping;
-	p->policy.invalidate_mapping = basic_invalidate_mapping;
-	p->policy.writeback_work = basic_writeback_work;
-	p->policy.force_mapping = basic_force_mapping;
-	p->policy.residency = basic_residency;
-	p->policy.tick = NULL;
-	p->policy.emit_config_values = basic_emit_config_values;
-	p->policy.set_config_value = basic_set_config_value;
+	basic->policy.destroy = basic_destroy;
+	basic->policy.map = basic_map;
+	basic->policy.lookup = basic_lookup;
+	basic->policy.set_dirty = basic_set_dirty;
+	basic->policy.clear_dirty = basic_clear_dirty;
+	basic->policy.load_mapping = basic_load_mapping;
+	basic->policy.walk_mappings = basic_walk_mappings;
+	basic->policy.remove_mapping = basic_remove_mapping;
+	basic->policy.invalidate_mapping = basic_invalidate_mapping;
+	basic->policy.writeback_work = basic_writeback_work;
+	basic->policy.force_mapping = basic_force_mapping;
+	basic->policy.residency = basic_residency;
+	basic->policy.tick = NULL;
+	basic->policy.emit_config_values = basic_emit_config_values;
+	basic->policy.set_config_value = basic_set_config_value;
 }
 
 static struct dm_cache_policy *basic_policy_create(dm_cblock_t cache_size,
@@ -1747,9 +1747,9 @@ static struct dm_cache_policy *basic_policy_create(dm_cblock_t cache_size,
 		{ &queue_add_q2,            &queue_del_multiqueue,	&queue_evict_q2_twoqueue },	/* P_q2 */
 		{ &queue_add_twoqueue,      &queue_del_multiqueue,	&queue_evict_q2_twoqueue },	/* P_twoqueue */
 	};
-	struct policy *p = kzalloc(sizeof(*p), GFP_KERNEL);
+	struct basic_policy *basic = kzalloc(sizeof(*basic), GFP_KERNEL);
 
-	if (!p)
+	if (!basic)
 		return NULL;
 
 	/* Set default (aka basic) policy (doesn't need a queue_fns entry above). */
@@ -1757,71 +1757,71 @@ static struct dm_cache_policy *basic_policy_create(dm_cblock_t cache_size,
 		type = p_multiqueue_ws;
 
 	/* Distinguish policies */
-	p->queues.fns = queue_fns + type;
+	basic->queues.fns = queue_fns + type;
 
-	init_policy_functions(p);
-	iot_init(&p->tracker);
+	init_policy_functions(basic);
+	iot_init(&basic->tracker);
 
-	p->cache_size = cache_size;
-	p->find_free_nr_words = bit_set_nr_words(from_cblock(cache_size));
-	p->find_free_last_word = 0;
-	p->block_size = block_size;
-	p->block_shift = ffs(block_size);
-	p->origin_size = origin_size;
-	p->calc_threshold_hits = max(from_cblock(cache_size) >> 2, 128U);
-	p->queues.ctype = T_HITS;
-	init_promote_threshold(p, false);
-	mutex_init(&p->lock);
-	queue_init(&p->queues.free);
-	queue_init(&p->queues.used);
-	queue_init(&p->queues.walk);
-	queue_init(&p->queues.dirty);
-	queue_init(&p->queues.pre.free);
-	queue_init(&p->queues.pre.used);
-	queue_init(&p->queues.post.free);
-	queue_init(&p->queues.post.used);
+	basic->cache_size = cache_size;
+	basic->find_free_nr_words = bit_set_nr_words(from_cblock(cache_size));
+	basic->find_free_last_word = 0;
+	basic->block_size = block_size;
+	basic->block_shift = ffs(block_size);
+	basic->origin_size = origin_size;
+	basic->calc_threshold_hits = max(from_cblock(cache_size) >> 2, 128U);
+	basic->queues.ctype = T_HITS;
+	init_promote_threshold(basic, false);
+	mutex_init(&basic->lock);
+	queue_init(&basic->queues.free);
+	queue_init(&basic->queues.used);
+	queue_init(&basic->queues.walk);
+	queue_init(&basic->queues.dirty);
+	queue_init(&basic->queues.pre.free);
+	queue_init(&basic->queues.pre.used);
+	queue_init(&basic->queues.post.free);
+	queue_init(&basic->queues.post.used);
 
-	if (IS_NOOP(p))
+	if (IS_NOOP(basic))
 		goto out;
 
 	/* Allocate cache entry structs and add them to free list. */
-	r = alloc_cache_blocks_with_hash(p, from_cblock(cache_size));
+	r = alloc_cache_blocks_with_hash(basic, from_cblock(cache_size));
 	if (r)
 		goto bad_free_policy;
 
 	/* Cache allocation bitset. */
-	p->allocation_bitset = alloc_bitset(from_cblock(cache_size));
-	if (!p->allocation_bitset)
+	basic->allocation_bitset = alloc_bitset(from_cblock(cache_size));
+	if (!basic->allocation_bitset)
 		goto bad_free_cache_blocks_and_hash;
 
-	if (IS_DUMB(p))
+	if (IS_DUMB(basic))
 		goto out;
 
 	/*
 	 * Create in queue to track entries waiting for the
 	 * cache in order to stear their promotion.
 	 */
-	r = alloc_track_queue_with_hash(&p->queues.pre, max(from_cblock(cache_size), 128U));
+	r = alloc_track_queue_with_hash(&basic->queues.pre, max(from_cblock(cache_size), 128U));
 	if (r)
 		goto bad_free_allocation_bitset;
 
 	/* Create cache_size queue to track evicted cache entries. */
-	r = alloc_track_queue_with_hash(&p->queues.post, max(from_cblock(cache_size) >> 1, 128U));
+	r = alloc_track_queue_with_hash(&basic->queues.post, max(from_cblock(cache_size) >> 1, 128U));
 	if (r)
 		goto bad_free_track_queue_pre;
 
-	if (IS_LFU_MFU_WS(p)) {
+	if (IS_LFU_MFU_WS(basic)) {
 		/* FIXME: replace with priority heap. */
-		p->queues.fu_pool = mempool_create(from_cblock(cache_size), btree_alloc, btree_free, NULL);
-		if (!p->queues.fu_pool)
+		basic->queues.fu_pool = mempool_create(from_cblock(cache_size), btree_alloc, btree_free, NULL);
+		if (!basic->queues.fu_pool)
 			goto bad_free_track_queue_post;
 
-		btree_init_mempool32(&p->queues.fu_head, p->queues.fu_pool);
+		btree_init_mempool32(&basic->queues.fu_head, basic->queues.fu_pool);
 
-	} else if (IS_Q2(p))
+	} else if (IS_Q2(basic))
 		mqueues = 1; /* Not really multiple queues but code can be shared */
 
-	else if (IS_TWOQUEUE(p)) {
+	else if (IS_TWOQUEUE(basic)) {
 		/*
 		 * Just 2 prio queues.
 		 *
@@ -1829,37 +1829,37 @@ static struct dm_cache_policy *basic_policy_create(dm_cblock_t cache_size,
 		 * Ie. 75% minimum is reserved for cblocks with multiple hits.
 		 */
 		mqueues = 2;
-		p->queues.twoqueue_q0_max_elts =
+		basic->queues.twoqueue_q0_max_elts =
 			min(max(from_cblock(cache_size) >> 2, 16U), from_cblock(cache_size));
 
-	} else if (IS_MULTIQUEUE(p)) {
+	} else if (IS_MULTIQUEUE(basic)) {
 		/* Multiple queues. */
 		mqueues = min(max((unsigned) ilog2(block_size << 13), 8U), (unsigned) from_cblock(cache_size));
-		p->jiffies = get_jiffies_64();
-		p->queues.mq_tmo = MQ_QUEUE_TMO_DEFAULT;
+		basic->jiffies = get_jiffies_64();
+		basic->queues.mq_tmo = MQ_QUEUE_TMO_DEFAULT;
 	}
 
 
 	if (mqueues) {
-		r = alloc_multiqueues(p, mqueues);
+		r = alloc_multiqueues(basic, mqueues);
 		if (r)
 			goto bad_free_track_queue_post;
 
 	}
 
 out:
-	return &p->policy;
+	return &basic->policy;
 
 bad_free_track_queue_post:
-	free_track_queue(&p->queues.post);
+	free_track_queue(&basic->queues.post);
 bad_free_track_queue_pre:
-	free_track_queue(&p->queues.pre);
+	free_track_queue(&basic->queues.pre);
 bad_free_allocation_bitset:
-	free_bitset(p->allocation_bitset);
+	free_bitset(basic->allocation_bitset);
 bad_free_cache_blocks_and_hash:
-	free_cache_blocks_and_hash(p);
+	free_cache_blocks_and_hash(basic);
 bad_free_policy:
-	kfree(p);
+	kfree(basic);
 
 	return NULL;
 }
