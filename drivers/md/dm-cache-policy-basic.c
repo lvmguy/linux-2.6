@@ -456,11 +456,18 @@ static void free_multiqueues(struct policy *p)
 static struct basic_cache_entry *alloc_cache_entry(struct policy *p)
 {
 	struct basic_cache_entry *e;
+	struct list_head *free = &p->queues.free;
 
 	BUG_ON(from_cblock(p->nr_cblocks_allocated) >= from_cblock(p->cache_size));
 
-	e = list_entry(queue_pop(&p->queues.free), struct basic_cache_entry, ce.list);
-	p->nr_cblocks_allocated = to_cblock(from_cblock(p->nr_cblocks_allocated) + 1);
+	if (queue_empty(free))
+		e = NULL;
+
+	else {
+		e = list_entry(queue_pop(free), struct basic_cache_entry, ce.list);
+		p->nr_cblocks_allocated = to_cblock(from_cblock(p->nr_cblocks_allocated) + 1);
+
+	}
 
 	return e;
 }
@@ -931,7 +938,7 @@ static void __queue_del_lfu_mfu(struct policy *p, struct list_head *elt)
 	BUG_ON(!head);
 	if (head == elt) {
 		/* Need to remove head, because it's the only element. */
-		if (list_empty(head)) {
+		if (queue_empty(head)) {
 			struct list_head *h = btree_remove32(&p->queues.fu_head, key);
 
 			BUG_ON(!h);
@@ -1000,7 +1007,7 @@ static struct list_head *queue_evict_lfu_mfu(struct policy *p)
 	r = btree_last32(&p->queues.fu_head, &k);
 	BUG_ON(!r);
 
-	if (list_empty(r))
+	if (queue_empty(r))
 		r = btree_remove32(&p->queues.fu_head, k);
 
 	else {
@@ -1221,6 +1228,7 @@ static void get_cache_block(struct policy *p, dm_oblock_t oblock, struct bio *bi
 		int r;
 
 		e = alloc_cache_entry(p);
+		BUG_ON(!e);
 		r = find_free_cblock(p, &e->cblock);
 		BUG_ON(r);
 
@@ -1417,25 +1425,27 @@ static int __set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, boo
 	int r;
 	struct policy *p = to_policy(pe);
 	struct basic_cache_entry *e;
+	const char *caller = set ? "set" : "clear";
 
 	mutex_lock(&p->lock);
 
 	e = lookup_cache_entry(p, oblock);
 	if (!e) {
-		DMWARN("basic_{set,clear}_dirty called for a block that isn't in the cache");
+		DMWARN("basic_%s_dirty called for a block that isn't in the cache", caller);
 		r = -ENOENT;
 
 	} else {
-		bool dirty = !list_empty(&e->dirty);
+		bool dirty = !queue_empty(&e->dirty);
 
 		queue_del(&e->dirty);
 
 		if (set) {
 			add_dirty_entry(p, e);
-			r = dirty ? 0 : - EINVAL;
+			r = dirty ? -EINVAL : 0;
 
 		} else
-			r = dirty ? -EINVAL : 0;
+			r = dirty ? 0 : - EINVAL;
+
 	}
 
 	mutex_unlock(&p->lock);
@@ -1620,7 +1630,7 @@ static int basic_writeback_work(struct dm_cache_policy *pe, dm_oblock_t *oblock,
 	mutex_lock(&p->lock);
 
 	/* FIXME: best effort with a dirty list. policy specific functions for optimization. */
-	if (!list_empty(dirty)) {
+	if (!queue_empty(dirty)) {
 		e = list_entry(queue_pop(dirty), struct basic_cache_entry, dirty);
 		queue_init(&e->dirty);
 		*cblock = e->cblock;
