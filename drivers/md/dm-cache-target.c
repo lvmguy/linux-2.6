@@ -1779,8 +1779,7 @@ static void invalidate_mappings(struct cache *cache)
 		dm_oblock_t given_oblock = requested_oblock;
 
 		/*
-		 * Policy either doesn't suport invalidation (yet) or
-		 * doesn't offer any more blocks to invalidate (e.g. 'era').
+		 * Policy either doesn't suport invalidation (yet)
 		 */
 		r = policy_invalidate_mapping(cache->policy, &given_oblock, &cblock);
 		if (r == -EINVAL) {
@@ -1788,12 +1787,15 @@ static void invalidate_mappings(struct cache *cache)
 			break;
 		}
 
-		/* Policy has provided all mappings to invalidate. */
+		/*
+		 * Policy doesn't offer any more blocks to invalidate (e.g. 'era').
+		 */
 		if (r == -ENODATA)
 			break;
 
 		/*
-		 * Policy can hand back a different oblock than the requested one at will!
+		 * Policy can hand back a different oblock than the
+		 * requested one at will (e.g. 'era')!
 		 *
 		 * Check if the given one is within our begin/end range
 		 * and reload the mapping if not, else remove mapping

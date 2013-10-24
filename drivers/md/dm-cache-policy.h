@@ -138,11 +138,18 @@ struct dm_cache_policy {
 	int (*lookup)(struct dm_cache_policy *p, dm_oblock_t oblock, dm_cblock_t *cblock);
 
 	/*
-	 * oblock must be a mapped block.  Must not block.
+	 * set/clear a blocks dirty state.
 	 *
-	 * Returns 0 if in cache and set/clear respectively succeded
-	 * -ENOENT if not in cache
-	 * -EINVAL if in cache but set/clear on an already set/clear entry
+	 * oblock is the block we want to change state for.  Must not block.
+	 *
+	 * Returns:
+	 *
+	 * 0       if block is in cache _and_ set/clear respectively succeded
+	 *
+	 * -EINVAL if block is in cache _but_ block was already set to dirty
+	 *  	   on a set call / clean on a clean call
+	 *
+	 * -ENOENT if block is not in cache
 	 */
 	int (*set_dirty)(struct dm_cache_policy *p, dm_oblock_t oblock);
 	int (*clear_dirty)(struct dm_cache_policy *p, dm_oblock_t oblock);
@@ -168,17 +175,33 @@ struct dm_cache_policy {
 	/*
 	 * Invalidate mapping for an origin block.
 	 *
-	 * Return:
-	 *	-EINVAL: if not supported or no further invalidation request allowed
-	 *	-EINODATA: no further invalidation request allowed
-	 *	0 and @cblock: if mapped
-	 *	-ENOENT:: if not.
+	 * Returns:
+	 *
+	 * 0 and @cblock,@oblock: if mapped, the policy returns the cache block
+	 *			  and optionally changes the original block (e.g. era)
+	 *
+	 * -EINVAL: invalidation not supported
+	 *
+	 * -ENOENT: no entry for @oblock in the cache
+	 * 
+	 * -ENODATA: all possible invalidation requests processed
 	 *
 	 * May return a _different_ oblock than the requested one
-	 * to allow the policy to rule which block to invalidate.
+	 * to allow the policy to rule which block to invalidate (e.g. era).
+	 *
 	 */
 	int (*invalidate_mapping)(struct dm_cache_policy *p, dm_oblock_t *oblock, dm_cblock_t *cblock);
 
+	/*
+	 * Provide a dirty block to be written back by the core target.
+	 *
+	 * Returns:
+	 *
+	 * 0 and @cblock,@oblock: block to write back provided
+	 *
+	 * -ENODATA: no dirty blocks available
+	 *
+	 */
 	int (*writeback_work)(struct dm_cache_policy *p, dm_oblock_t *oblock, dm_cblock_t *cblock);
 
 	/*

@@ -1412,7 +1412,7 @@ static void add_dirty_entry(struct policy *p, struct basic_cache_entry *e)
 		queue_add_tail(&p->queues.dirty, &e->dirty);
 }
 
-static int _set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bool set)
+static int __set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bool set)
 {
 	int r;
 	struct policy *p = to_policy(pe);
@@ -1445,12 +1445,12 @@ static int _set_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock, bool
 
 static int basic_set_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
 {
-	return _set_clear_dirty(pe, oblock, true);
+	return __set_clear_dirty(pe, oblock, true);
 }
 
 static int basic_clear_dirty(struct dm_cache_policy *pe, dm_oblock_t oblock)
 {
-	return _set_clear_dirty(pe, oblock, false);
+	return __set_clear_dirty(pe, oblock, false);
 }
 
 static int basic_load_mapping(struct dm_cache_policy *pe,
