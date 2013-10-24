@@ -346,10 +346,10 @@ static int era_load_mapping(struct dm_cache_policy *p,
 		smp_rmb();
 		if (recovered_era >= era->era_counter) {
 			era->era_counter = recovered_era;
-			if (era->era_counter < ERA_MAX_ERA) {
+			if (era->era_counter < ERA_MAX_ERA)
 				era->era_counter++;
-				smp_wmb();
-			}
+
+			smp_wmb();
 #if DEBUG_ERA
 			DMDEBUG("set era_counter to %u.", era->era_counter);
 #endif
@@ -461,8 +461,9 @@ static int era_emit_config_values(struct dm_cache_policy *p, char *result,
 {
 	struct era_policy *era = to_era_policy(p);
 	ssize_t sz = 0;
-	DMEMIT("era_counter %u ", era->era_counter);
+
 	smp_rmb();
+	DMEMIT("era_counter %u ", era->era_counter);
 	return policy_emit_config_values(p->child, result + sz, maxlen - sz);
 }
 

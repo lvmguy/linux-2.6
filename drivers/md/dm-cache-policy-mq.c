@@ -153,6 +153,7 @@ static void queue_init(struct queue *q)
 
 /*
  * Checks to see if the queue is empty.
+ * FIXME: reduce cpu usage.
  */
 static bool queue_empty(struct queue *q)
 {
@@ -254,11 +255,11 @@ struct mq_policy {
 	struct io_tracker tracker;
 
 	/*
-	 * We maintain three queues of entries.  The cache proper
-	 * consisting of a clean and a dirty queue contains
-	 * the currently active mappings.  Whereas the pre_cache tracks
-	 * blocks that are being hit frequently and potential candidates
-	 * for promotion to the cache.
+	 * We maintain three queues of entries.  The cache proper,
+	 * consisting of a clean and dirty queue, contains the currently
+	 * active mappings.  Whereas the pre_cache tracks blocks that
+	 * are being hit frequently and potential candidates for promotion
+	 * to the cache.
 	 */
 	struct queue pre_cache;
 	struct queue cache_clean;
@@ -691,18 +692,18 @@ static int demote_cblock(struct mq_policy *mq, dm_oblock_t *oblock, dm_cblock_t 
 static unsigned adjusted_promote_threshold(struct mq_policy *mq,
 					   bool discarded_oblock, int data_dir)
 {
-	if (data_dir == WRITE) {
-		if (discarded_oblock && (any_free_cblocks(mq) || any_clean_cblocks(mq))) {
-			/*
-			 * We don't need to do any copying at all, so give this a
-			 * very low threshold.
-			 */
-			return DISCARDED_PROMOTE_THRESHOLD;
-		} else
-			return mq->promote_threshold + WRITE_PROMOTE_THRESHOLD;
+	if (data_dir == READ)
+		return mq->promote_threshold + READ_PROMOTE_THRESHOLD;
+
+	if (discarded_oblock && (any_free_cblocks(mq) || any_clean_cblocks(mq))) {
+		/*
+		 * We don't need to do any copying at all, so give this a
+		 * very low threshold.
+		 */
+		return DISCARDED_PROMOTE_THRESHOLD;
 	}
 
-	return mq->promote_threshold + READ_PROMOTE_THRESHOLD;
+	return mq->promote_threshold + WRITE_PROMOTE_THRESHOLD;
 }
 
 static bool should_promote(struct mq_policy *mq, struct entry *e,
@@ -974,18 +975,19 @@ static int mq_lookup(struct dm_cache_policy *p, dm_oblock_t oblock, dm_cblock_t 
 	return r;
 }
 
-// FIXME: can these block?
-static int _mq_set_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock, bool set)
+// FIXME: can __mq_set_clear_dirty block?
+static int __mq_set_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock, bool set)
 {
 	int r = 0;
 	struct mq_policy *mq = to_mq_policy(p);
 	struct entry *e;
+	const char *caller = set ? "dirty" : "clean";
 
 	mutex_lock(&mq->lock);
 	e = hash_lookup(mq, oblock);
 	if (!e) {
 		r = -ENOENT;
-		DMWARN("mq_{set,clear}_dirty called for a block that isn't in the cache");
+		DMWARN("mq_%s_dirty called for a block that isn't in the cache", caller);
 
 	} else {
 		BUG_ON(!e->in_cache);
@@ -1008,12 +1010,12 @@ static int _mq_set_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock, bo
 
 static int mq_set_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 {
-	return _mq_set_clear_dirty(p, oblock, true);
+	return __mq_set_clear_dirty(p, oblock, true);
 }
 
 static int mq_clear_dirty(struct dm_cache_policy *p, dm_oblock_t oblock)
 {
-	return _mq_set_clear_dirty(p, oblock, false);
+	return __mq_set_clear_dirty(p, oblock, false);
 }
 
 static int mq_load_mapping(struct dm_cache_policy *p,
@@ -1326,7 +1328,7 @@ static struct dm_cache_policy_type mq_policy_type = {
 	.version = {1, 0, 0},
 	.hint_size = 4,
 	.owner = THIS_MODULE,
-	.create = mq_create,
+	.create = mq_create
 };
 
 static struct dm_cache_policy_type default_policy_type = {
@@ -1334,7 +1336,7 @@ static struct dm_cache_policy_type default_policy_type = {
 	.version = {1, 0, 0},
 	.hint_size = 4,
 	.owner = THIS_MODULE,
-	.create = mq_create,
+	.create = mq_create
 };
 
 static int __init mq_init(void)
