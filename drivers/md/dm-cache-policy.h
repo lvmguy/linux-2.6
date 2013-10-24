@@ -139,6 +139,10 @@ struct dm_cache_policy {
 
 	/*
 	 * oblock must be a mapped block.  Must not block.
+	 *
+	 * Returns 0 if in cache and set/clear respectively succeded
+	 * -ENOENT if not in cache
+	 * -EINVAL if in cache but set/clear on an already set/clear entry
 	 */
 	int (*set_dirty)(struct dm_cache_policy *p, dm_oblock_t oblock);
 	int (*clear_dirty)(struct dm_cache_policy *p, dm_oblock_t oblock);
