@@ -1,5 +1,5 @@
 /*
- i Copyright (C) 2013 Red Hat. All rights reserved.
+ * Copyright (C) 2013 Red Hat. All rights reserved.
  *
  * Shim "background" write cache replacement policy module.
  *
