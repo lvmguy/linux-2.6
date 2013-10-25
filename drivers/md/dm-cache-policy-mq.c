@@ -137,33 +137,30 @@ static void iot_examine_bio(struct io_tracker *t, struct bio *bio)
  * entries to the back of any of the levels.  Think of it as a partially
  * sorted queue.
  */
-#define NR_QUEUE_LEVELS 16u
+#define NR_QUEUE_BITS	4
+#define NR_QUEUE_LEVELS	(1 << NR_QUEUE_BITS)
 
 struct queue {
 	struct list_head qs[NR_QUEUE_LEVELS];
+	unsigned long level_bits; /* For fast queue checks/processing */
 };
 
 static void queue_init(struct queue *q)
 {
-	unsigned i;
+	unsigned i = NR_QUEUE_LEVELS;
 
-	for (i = 0; i < NR_QUEUE_LEVELS; i++)
+	while (i--)
 		INIT_LIST_HEAD(q->qs + i);
+
+	q->level_bits = 0;
 }
 
 /*
- * Checks to see if the queue is empty.
- * FIXME: reduce cpu usage.
+ * Checks if the queue is empty.
  */
 static bool queue_empty(struct queue *q)
 {
-	unsigned i;
-
-	for (i = 0; i < NR_QUEUE_LEVELS; i++)
-		if (!list_empty(q->qs + i))
-			return false;
-
-	return true;
+	return !q->level_bits;
 }
 
 /*
@@ -172,23 +169,43 @@ static bool queue_empty(struct queue *q)
 static void queue_push(struct queue *q, unsigned level, struct list_head *elt)
 {
 	list_add_tail(elt, q->qs + level);
+	set_bit(level, &q->level_bits);
 }
 
-static void queue_remove(struct list_head *elt)
+static void queue_remove(struct queue *q, unsigned level, struct list_head *elt)
 {
 	list_del(elt);
+
+	if (list_empty(q->qs + level))
+		clear_bit(level, &q->level_bits);
 }
 
 /*
- * Shifts all regions down one level.  This has no effect on the order of
+ * Shifts all populated levels down one level.  This has no effect on the order of
  * the queue.
  */
 static void queue_shift_down(struct queue *q)
 {
-	unsigned level;
+	unsigned level = 0;
+	unsigned last_level = 0;
 
-	for (level = 1; level < NR_QUEUE_LEVELS; level++)
+	while ((level = find_next_bit(&q->level_bits, NR_QUEUE_LEVELS, level)) < NR_QUEUE_LEVELS) {
+
+		DMDEBUG_LIMIT("queue_shift++"); /* FIXME: REMOVEME: */
+
 		list_splice_init(q->qs + level, q->qs + level - 1);
+		clear_bit(level, &q->level_bits);
+		set_bit(level - 1, &q->level_bits);
+
+{ /* FIXME: REMOVEME: */
+		if (level > last_level + 1)
+			DMDEBUG_LIMIT("queue_shift_optimized++");
+
+		last_level = level;
+
+		level++;
+}
+	}
 }
 
 /*
@@ -197,22 +214,29 @@ static void queue_shift_down(struct queue *q)
  */
 static struct list_head *queue_pop(struct queue *q)
 {
-	unsigned level;
+	unsigned level = find_next_bit(&q->level_bits, NR_QUEUE_LEVELS, 0);
 	struct list_head *r;
 
-	for (level = 0; level < NR_QUEUE_LEVELS; level++)
-		if (!list_empty(q->qs + level)) {
-			r = q->qs[level].next;
-			list_del(r);
+	if (level >= NR_QUEUE_LEVELS) {
+		/*
+		 * All queue levels are empty.
+		 */
+		return NULL;
+	}
 
-			/* have we just emptied the bottom level? */
-			if (level == 0 && list_empty(q->qs))
-				queue_shift_down(q);
+	r = q->qs[level].next;
+	list_del(r);
 
-			return r;
+	if (list_empty(q->qs + level)) {
+		clear_bit(level, &q->level_bits);
+
+		if (level == 0) {
+			/* We have just emptied the bottom level -> shift! */
+			queue_shift_down(q);
 		}
+	}
 
-	return NULL;
+	return r;
 }
 
 static struct list_head *list_pop(struct list_head *lh)
@@ -239,6 +263,7 @@ struct entry {
 	/*
 	 * FIXME: pack these better
 	 */
+	unsigned level:NR_QUEUE_BITS;	/* queue level we're on. FIXME: costly. */
 	bool in_cache:1;
 	bool dirty:1;
 	unsigned hit_count;
@@ -515,12 +540,27 @@ static void push(struct mq_policy *mq, struct entry *e)
 	e->tick = mq->tick;
 	hash_insert(mq, e);
 
+	e->level = queue_level(e);
+
 	if (e->in_cache) {
 		alloc_cblock(mq, e->cblock);
 		queue_push(e->dirty ? &mq->cache_dirty : &mq->cache_clean,
-			   queue_level(e), &e->list);
+			   e->level, &e->list);
 	} else
-		queue_push(&mq->pre_cache, queue_level(e), &e->list);
+		queue_push(&mq->pre_cache, e->level, &e->list);
+}
+
+/*
+ * Returns reference to queue the entry is on.
+ *
+ * FIXME: we pay with this for optimizing queue_empty()
+ */
+static struct queue *__get_queue(struct mq_policy *mq, struct entry *e)
+{
+	if (e->dirty)
+		return &mq->cache_dirty;
+
+	return e->in_cache ? &mq->cache_clean : &mq->pre_cache;
 }
 
 /*
@@ -529,7 +569,7 @@ static void push(struct mq_policy *mq, struct entry *e)
  */
 static void del(struct mq_policy *mq, struct entry *e)
 {
-	queue_remove(&e->list);
+	queue_remove(__get_queue(mq, e), e->level, &e->list);
 	hash_remove(e);
 	if (e->in_cache)
 		free_cblock(mq, e->cblock);
