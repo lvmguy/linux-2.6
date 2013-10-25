@@ -470,6 +470,7 @@ static void alloc_cblock(struct mq_policy *mq, dm_cblock_t cblock)
 
 	set_bit(from_cblock(cblock), mq->allocation_bitset);
 	mq->nr_cblocks_allocated++;
+	smp_wmb();
 }
 
 static void free_cblock(struct mq_policy *mq, dm_cblock_t cblock)
@@ -479,6 +480,7 @@ static void free_cblock(struct mq_policy *mq, dm_cblock_t cblock)
 
 	clear_bit(from_cblock(cblock), mq->allocation_bitset);
 	mq->nr_cblocks_allocated--;
+	smp_wmb();
 }
 
 static bool any_free_cblocks(struct mq_policy *mq)
@@ -1234,7 +1236,7 @@ static dm_cblock_t mq_residency(struct dm_cache_policy *p)
 {
 	struct mq_policy *mq = to_mq_policy(p);
 
-	/* FIXME: lock mutex, not sure we can block here */
+	smp_rmb();
 	return to_cblock(mq->nr_cblocks_allocated);
 }
 
