@@ -538,47 +538,26 @@ static dm_dblock_t oblock_to_dblock(struct cache *cache, dm_oblock_t oblock)
 
 static void set_discard(struct cache *cache, dm_dblock_t b)
 {
-	unsigned long flags;
-
 	atomic_inc(&cache->stats.discard_count);
-
-	spin_lock_irqsave(&cache->lock, flags);
 	set_bit(from_dblock(b), cache->discard_bitset);
-	spin_unlock_irqrestore(&cache->lock, flags);
+	smp_wmb();
 }
 
 static void clear_discard(struct cache *cache, dm_dblock_t b)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&cache->lock, flags);
 	clear_bit(from_dblock(b), cache->discard_bitset);
-	spin_unlock_irqrestore(&cache->lock, flags);
+	smp_wmb();
 }
 
 static bool is_discarded(struct cache *cache, dm_dblock_t b)
 {
-	int r;
-	unsigned long flags;
-
-	spin_lock_irqsave(&cache->lock, flags);
-	r = test_bit(from_dblock(b), cache->discard_bitset);
-	spin_unlock_irqrestore(&cache->lock, flags);
-
-	return r;
+	smp_rmb();
+	return test_bit(from_dblock(b), cache->discard_bitset);
 }
 
 static bool is_discarded_oblock(struct cache *cache, dm_oblock_t b)
 {
-	int r;
-	unsigned long flags;
-
-	spin_lock_irqsave(&cache->lock, flags);
-	r = test_bit(from_dblock(oblock_to_dblock(cache, b)),
-		     cache->discard_bitset);
-	spin_unlock_irqrestore(&cache->lock, flags);
-
-	return r;
+	return is_discarded(cache, oblock_to_dblock(cache, b));
 }
 
 /*----------------------------------------------------------------*/
@@ -1127,6 +1106,7 @@ static void process_migrations(struct cache *cache, struct list_head *head,
 	struct dm_cache_migration *mg, *tmp;
 
 	INIT_LIST_HEAD(&list);
+
 	spin_lock_irq(&cache->lock);
 	list_splice_init(head, &list);
 	spin_unlock_irq(&cache->lock);
@@ -1155,13 +1135,12 @@ static void queue_quiesced_migration(struct dm_cache_migration *mg)
 /* This is being called from interrupt context! */
 static void queue_quiesced_migrations(struct cache *cache, struct list_head *work)
 {
-	unsigned long flags;
 	struct dm_cache_migration *mg, *tmp;
 
-	spin_lock_irqsave(&cache->lock, flags);
+	spin_lock(&cache->lock);
 	list_for_each_entry_safe(mg, tmp, work, list)
 		__queue_quiesced_migration(mg);
-	spin_unlock_irqrestore(&cache->lock, flags);
+	spin_unlock(&cache->lock);
 
 	wake_worker(cache);
 }
@@ -1287,13 +1266,13 @@ static void invalidate(struct cache *cache, struct prealloc *structs,
 /*----------------------------------------------------------------
  * bio processing
  *--------------------------------------------------------------*/
+
+/* Don't call from interrupt context! */
 static void defer_bio(struct cache *cache, struct bio *bio)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&cache->lock, flags);
+	spin_lock_irq(&cache->lock);
 	bio_list_add(&cache->deferred_bios, bio);
-	spin_unlock_irqrestore(&cache->lock, flags);
+	spin_unlock_irq(&cache->lock);
 
 	wake_worker(cache);
 }
@@ -1631,7 +1610,6 @@ static int commit_if_needed(struct cache *cache)
 
 static void process_deferred_bios(struct cache *cache)
 {
-	unsigned long flags;
 	struct bio_list bios;
 	struct bio *bio;
 	struct prealloc structs;
@@ -1639,10 +1617,10 @@ static void process_deferred_bios(struct cache *cache)
 	memset(&structs, 0, sizeof(structs));
 	bio_list_init(&bios);
 
-	spin_lock_irqsave(&cache->lock, flags);
+	spin_lock_irq(&cache->lock);
 	bio_list_merge(&bios, &cache->deferred_bios);
 	bio_list_init(&cache->deferred_bios);
-	spin_unlock_irqrestore(&cache->lock, flags);
+	spin_unlock_irq(&cache->lock);
 
 	while (!bio_list_empty(&bios)) {
 		/*
@@ -1651,9 +1629,9 @@ static void process_deferred_bios(struct cache *cache)
 		 * prepared mappings to process.
 		 */
 		if (prealloc_data_structs(cache, &structs)) {
-			spin_lock_irqsave(&cache->lock, flags);
+			spin_lock_irq(&cache->lock);
 			bio_list_merge(&cache->deferred_bios, &bios);
-			spin_unlock_irqrestore(&cache->lock, flags);
+			spin_unlock_irq(&cache->lock);
 			break;
 		}
 
@@ -1672,16 +1650,15 @@ static void process_deferred_bios(struct cache *cache)
 
 static void process_deferred_flush_bios(struct cache *cache, bool submit_bios)
 {
-	unsigned long flags;
 	struct bio_list bios;
 	struct bio *bio;
 
 	bio_list_init(&bios);
 
-	spin_lock_irqsave(&cache->lock, flags);
+	spin_lock_irq(&cache->lock);
 	bio_list_merge(&bios, &cache->deferred_flush_bios);
 	bio_list_init(&cache->deferred_flush_bios);
-	spin_unlock_irqrestore(&cache->lock, flags);
+	spin_unlock_irq(&cache->lock);
 
 	while ((bio = bio_list_pop(&bios)))
 		submit_bios ? generic_make_request(bio) : bio_io_error(bio);
@@ -1689,16 +1666,15 @@ static void process_deferred_flush_bios(struct cache *cache, bool submit_bios)
 
 static void process_deferred_writethrough_bios(struct cache *cache)
 {
-	unsigned long flags;
 	struct bio_list bios;
 	struct bio *bio;
 
 	bio_list_init(&bios);
 
-	spin_lock_irqsave(&cache->lock, flags);
+	spin_lock_irq(&cache->lock);
 	bio_list_merge(&bios, &cache->deferred_writethrough_bios);
 	bio_list_init(&cache->deferred_writethrough_bios);
-	spin_unlock_irqrestore(&cache->lock, flags);
+	spin_unlock_irq(&cache->lock);
 
 	while ((bio = bio_list_pop(&bios)))
 		generic_make_request(bio);
@@ -1741,30 +1717,27 @@ static void writeback_some_dirty_blocks(struct cache *cache)
  *--------------------------------------------------------------*/
 static void start_quiescing(struct cache *cache)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&cache->lock, flags);
+	spin_lock_irq(&cache->lock);
 	cache->quiescing = true;
-	spin_unlock_irqrestore(&cache->lock, flags);
+	spin_unlock_irq(&cache->lock);
 }
 
 static void stop_quiescing(struct cache *cache)
 {
 	unsigned long flags;
 
-	spin_lock_irqsave(&cache->lock, flags);
+	spin_lock_irq(&cache->lock);
 	cache->quiescing = false;
-	spin_unlock_irqrestore(&cache->lock, flags);
+	spin_unlock_irq(&cache->lock);
 }
 
 static bool is_quiescing(struct cache *cache)
 {
 	int r;
-	unsigned long flags;
 
-	spin_lock_irqsave(&cache->lock, flags);
+	spin_lock_irq(&cache->lock);
 	r = cache->quiescing;
-	spin_unlock_irqrestore(&cache->lock, flags);
+	spin_unlock_irq(&cache->lock);
 
 	return r;
 }
