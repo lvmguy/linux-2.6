@@ -141,7 +141,7 @@ struct basic_cache_entry {
 
 	dm_cblock_t cblock;
 	unsigned long access, expire;
-	unsigned saved;
+	unsigned tick, saved;
 };
 
 /* Pre and post cache queue entry. */
@@ -260,6 +260,15 @@ struct basic_policy {
 
 	/* MINORME: allocate only for multiqueue? */
 	unsigned long jiffies;
+
+	/*
+	 * Keeps track of time, incremented by the core.  We use this to
+	 * avoid attributing multiple hits within the same tick.
+	 *
+	 * tick_extern is the one updated by the core target.
+	 * It's copied to tick at the start of the map function.
+	 */
+	unsigned tick, tick_extern;
 
 	/*
 	 * We know exactly how many cblocks will be needed, so we can
@@ -1124,6 +1133,7 @@ static void alloc_cblock_insert_cache_and_count_entry(struct basic_policy *basic
 	unsigned t, u, end = ARRAY_SIZE(e->ce.count[T_HITS]);
 
 	alloc_cblock(basic, e->cblock);
+	e->tick = basic->tick;
 	insert_cache_hash_entry(basic, e);
 
 	if (IS_DUMB(basic) || IS_NOOP(basic))
@@ -1138,6 +1148,14 @@ static void add_cache_entry(struct basic_policy *basic, struct basic_cache_entry
 {
 	basic->queues.fns->add(basic, &e->ce.list);
 	alloc_cblock_insert_cache_and_count_entry(basic, e);
+}
+
+/*
+ * Has this entry already been updated?
+ */
+static bool updated_this_tick(struct basic_policy *basic, struct basic_cache_entry *e)
+{
+	return e->tick == basic->tick;
 }
 
 static void remove_cache_entry(struct basic_policy *basic, struct basic_cache_entry *e)
@@ -1176,6 +1194,9 @@ static void update_cache_entry(struct basic_policy *basic, struct basic_cache_en
 
 	result->op = POLICY_HIT;
 	result->cblock = e->cblock;
+
+	if (updated_this_tick(basic, e))
+		return;
 
 	if (IS_DUMB(basic) || IS_NOOP(basic))
 		return;
@@ -1339,6 +1360,8 @@ static int basic_map(struct dm_cache_policy *p, dm_oblock_t oblock,
 
 	else if (!mutex_trylock(&basic->lock))
 		return -EWOULDBLOCK;
+
+	basic->tick = basic->tick_extern;
 
 	if (!IS_DUMB(basic) && !IS_NOOP(basic))
 		map_prerequisites(basic, bio);
@@ -1651,6 +1674,14 @@ static dm_cblock_t basic_residency(struct dm_cache_policy *p)
 	return to_basic_policy(p)->nr_cblocks_allocated;
 }
 
+static void basic_tick(struct dm_cache_policy *p)
+{
+	struct basic_policy *basic = to_basic_policy(p);
+
+	basic->tick_extern++;
+	smp_wmb();
+}
+
 static int basic_set_config_value(struct dm_cache_policy *p,
 				  const char *key, const char *value)
 {
@@ -1717,7 +1748,7 @@ static void init_policy_functions(struct basic_policy *basic)
 	basic->policy.writeback_work = basic_writeback_work;
 	basic->policy.force_mapping = basic_force_mapping;
 	basic->policy.residency = basic_residency;
-	basic->policy.tick = NULL;
+	basic->policy.tick = basic_tick;
 	basic->policy.emit_config_values = basic_emit_config_values;
 	basic->policy.set_config_value = basic_set_config_value;
 }
@@ -1780,6 +1811,9 @@ static struct dm_cache_policy *basic_policy_create(dm_cblock_t cache_size,
 	queue_init(&basic->queues.pre.used);
 	queue_init(&basic->queues.post.free);
 	queue_init(&basic->queues.post.used);
+
+	basic->tick_extern = 0;
+	basic->tick = 0;
 
 	if (IS_NOOP(basic))
 		goto out;
