@@ -964,11 +964,8 @@ static void mq_destroy(struct dm_cache_policy *p)
 
 static void copy_tick(struct mq_policy *mq)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&mq->tick_lock, flags);
+	smp_rmb();
 	mq->tick = mq->tick_protected;
-	spin_unlock_irqrestore(&mq->tick_lock, flags);
 }
 
 static int mq_map(struct dm_cache_policy *p, dm_oblock_t oblock,
@@ -1243,11 +1240,9 @@ static dm_cblock_t mq_residency(struct dm_cache_policy *p)
 static void mq_tick(struct dm_cache_policy *p)
 {
 	struct mq_policy *mq = to_mq_policy(p);
-	unsigned long flags;
 
-	spin_lock_irqsave(&mq->tick_lock, flags);
 	mq->tick_protected++;
-	spin_unlock_irqrestore(&mq->tick_lock, flags);
+	smp_wmb();
 }
 
 static int mq_set_config_value(struct dm_cache_policy *p,
@@ -1324,7 +1319,6 @@ static struct dm_cache_policy *mq_create(dm_cblock_t cache_size,
 	mq->generation = 0;
 	mq->promote_threshold = 0;
 	mutex_init(&mq->lock);
-	spin_lock_init(&mq->tick_lock);
 	mq->find_free_last_cblock = 0;
 
 	queue_init(&mq->pre_cache);
