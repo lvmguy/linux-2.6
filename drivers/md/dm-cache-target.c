@@ -20,6 +20,7 @@
 #define DM_MSG_PREFIX "cache"
 
 #define	DEBUG_TARGET	1
+#define	ISSUE_OVERWRITE	1
 
 DECLARE_DM_KCOPYD_THROTTLE_WITH_MODULE_PARM(cache_copy_throttle,
 	"A percentage of time allocated for copying to and/or from cache");
@@ -661,14 +662,13 @@ static void check_if_tick_bio_needed(struct cache *cache, struct bio *bio)
 	size_t pb_data_size = get_per_bio_data_size(cache);
 	struct per_bio_data *pb = get_per_bio_data(bio, pb_data_size);
 
-	spin_lock_irq(&cache->lock);
+	smp_rmb();
 	if (cache->need_tick_bio &&
 	    !(bio->bi_rw & (REQ_FUA | REQ_FLUSH | REQ_DISCARD))) {
 		pb->tick = true;
 		cache->need_tick_bio = false;
+		smp_wmb();
 	}
-
-	spin_unlock_irq(&cache->lock);
 }
 
 static bool is_write_io(struct bio *bio)
@@ -750,6 +750,8 @@ static void issue(struct cache *cache, struct bio *bio)
 /* In interrupt context. */
 static void defer_writethrough_bio(struct cache *cache, struct bio *bio)
 {
+	BUG_ON(!in_interrupt());
+
 	spin_lock(&cache->lock);
 	bio_list_add(&cache->deferred_writethrough_bios, bio);
 	spin_unlock(&cache->lock);
@@ -979,9 +981,11 @@ static void copy_complete(int read_err, unsigned long write_err, void *context)
 	if (read_err || write_err)
 		mg->err = true;
 
-	spin_lock(&cache->lock);
+	BUG_ON(in_interrupt());
+
+	spin_lock_irq(&cache->lock);
 	list_add_tail(&mg->list, &cache->completed_migrations);
-	spin_unlock(&cache->lock);
+	spin_unlock_irq(&cache->lock);
 
 	wake_worker(cache);
 }
@@ -1017,6 +1021,7 @@ static void issue_copy_real(struct dm_cache_migration *mg)
 	}
 }
 
+/* In interrupt context. */
 static void overwrite_endio(struct bio *bio, int err)
 {
 	struct dm_cache_migration *mg = bio->bi_private;
@@ -1026,6 +1031,8 @@ static void overwrite_endio(struct bio *bio, int err)
 
 	if (err)
 		mg->err = true;
+
+	BUG_ON(!in_interrupt());
 
 	spin_lock(&cache->lock);
 	list_add_tail(&mg->list, &cache->completed_migrations);
@@ -1072,7 +1079,7 @@ static void issue_copy(struct dm_cache_migration *mg)
 		struct bio *bio = mg->new_ocell->holder;
 
 		avoid = is_discarded_oblock(cache, mg->new_oblock);
-#if 1
+#if ISSUE_OVERWRITE
 		if (!avoid && bio_writes_complete_block(cache, bio)) {
 			issue_overwrite(mg, bio);
 			return;
@@ -2770,12 +2777,11 @@ static int cache_end_io(struct dm_target *ti, struct bio *bio, int error)
 
 	discount_bio(cache, bi_size);
 
+	smp_rmb();
 	if (pb->tick) {
 		policy_tick(cache->policy);
-
-		spin_lock(&cache->lock);
 		cache->need_tick_bio = true;
-		spin_unlock(&cache->lock);
+		smp_wmb();
 	}
 
 	check_for_quiesced_migrations(cache, pb);
@@ -3016,9 +3022,8 @@ static void cache_resume(struct dm_target *ti)
 {
 	struct cache *cache = ti->private;
 
-	spin_lock_irq(&cache->lock);
 	cache->need_tick_bio = true;
-	spin_unlock_irq(&cache->lock);
+	smp_wmb();
 
 	do_waker(&cache->waker.work);
 }
@@ -3072,7 +3077,7 @@ static void cache_status(struct dm_target *ti, status_type_t type,
 		smp_rmb();
 #if DEBUG_TARGET
 		       /* FIXME: REMOVEME: devel */
-		DMEMIT("%llu/%llu %u %u %u %u %u %u %llu %u **%u %u,%u/%u,%u/%u,%u/%u,%u/%u,%u** ",
+		DMEMIT("%llu/%llu %u %u %u %u %u %u %llu %u **%u %u %u,%u/%u,%u/%u,%u/%u,%u/%u,%u** ",
 		       (unsigned long long)(nr_blocks_metadata - nr_free_blocks_metadata),
 		       (unsigned long long)nr_blocks_metadata,
 		       (unsigned) atomic_read(&cache->stats.read_hit),
@@ -3084,6 +3089,7 @@ static void cache_status(struct dm_target *ti, status_type_t type,
 		       (unsigned long long) from_cblock(residency),
 		       cache->nr_dirty,
 		       (unsigned) atomic_read(&cache->sectors_in_flight),
+		       (unsigned) atomic_read(&cache->stats.copies_avoided),
 		       (unsigned) atomic_read(&cache->total_migration_jiffies),
 		       (unsigned) atomic_read(&cache->stats.bw_priority),
 		       (unsigned) atomic_read(&cache->stats.no_bw_priority),
