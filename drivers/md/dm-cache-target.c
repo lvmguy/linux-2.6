@@ -1773,13 +1773,17 @@ static void invalidate_mappings(struct cache *cache)
 {
 	dm_oblock_t requested_oblock, begin, end;
 	unsigned long long count = 0;
+#ifdef DEBUG_TARGET
 	unsigned long long start; /* FIXME: REMOVEME */
+#endif
 
 	smp_rmb();
 	if (!cache->invalidate)
 		return;
 
+#ifdef DEBUG_TARGET
 	start = jiffies; /* FIXME: REMOVEME */
+#endif
 
 	begin = requested_oblock = cache->begin_invalidate;
 	end = to_oblock(from_oblock(cache->end_invalidate));
@@ -1844,9 +1848,11 @@ static void invalidate_mappings(struct cache *cache)
 		requested_oblock = to_oblock(from_oblock(requested_oblock) + 1);
 	}
 
+#ifdef DEBUG_TARGET
 	DMINFO("%llu mappings invalidated in %llu jiffies", count, jiffies -  start); /* FIXME: REMOVEME: */
-
+#endif
 	cache->invalidate = false;
+	smp_wmb();
 }
 
 static int more_work(struct cache *cache)
@@ -3191,6 +3197,7 @@ static int set_invalidate_mappings(struct cache *cache, char **argv)
 		return -EPERM;
 	}
 
+	smp_rmb();
 	if (cache->invalidate) {
 		DMERR("cache is processing invalidation");
 		return -EPERM;

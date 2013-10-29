@@ -14,6 +14,7 @@
 #include <linux/module.h>
 #include <linux/slab.h>
 #include <linux/hash.h>
+#include <linux/vmalloc.h>
 
 #define	DM_MSG_PREFIX	"dm-cache-debug"
 
