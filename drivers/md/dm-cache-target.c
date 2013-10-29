@@ -747,6 +747,7 @@ static void issue(struct cache *cache, struct bio *bio)
 	spin_unlock_irq(&cache->lock);
 }
 
+/* In interrupt context. */
 static void defer_writethrough_bio(struct cache *cache, struct bio *bio)
 {
 	spin_lock(&cache->lock);
@@ -756,6 +757,7 @@ static void defer_writethrough_bio(struct cache *cache, struct bio *bio)
 	wake_worker(cache);
 }
 
+/* In interrupt context. */
 static void writethrough_endio(struct bio *bio, int err)
 {
 	struct per_bio_data *pb = get_per_bio_data(bio, PB_DATA_SIZE_WT);
@@ -1717,29 +1719,20 @@ static void writeback_some_dirty_blocks(struct cache *cache)
  *--------------------------------------------------------------*/
 static void start_quiescing(struct cache *cache)
 {
-	spin_lock_irq(&cache->lock);
 	cache->quiescing = true;
-	spin_unlock_irq(&cache->lock);
+	smp_wmb();
 }
 
 static void stop_quiescing(struct cache *cache)
 {
-	unsigned long flags;
-
-	spin_lock_irq(&cache->lock);
 	cache->quiescing = false;
-	spin_unlock_irq(&cache->lock);
+	smp_wmb();
 }
 
 static bool is_quiescing(struct cache *cache)
 {
-	int r;
-
-	spin_lock_irq(&cache->lock);
-	r = cache->quiescing;
-	spin_unlock_irq(&cache->lock);
-
-	return r;
+	smp_rmb();
+	return cache->quiescing;
 }
 
 static void wait_for_migrations(struct cache *cache)
@@ -3026,6 +3019,7 @@ static void cache_resume(struct dm_target *ti)
 	spin_lock_irq(&cache->lock);
 	cache->need_tick_bio = true;
 	spin_unlock_irq(&cache->lock);
+
 	do_waker(&cache->waker.work);
 }
 
