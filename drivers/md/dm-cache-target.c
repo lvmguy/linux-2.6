@@ -156,12 +156,8 @@ struct cache_stats {
 	/* FIXME: REMOVEME: devel */
 	atomic_t bw_priority;
 	atomic_t no_bw_priority;
-	atomic_t bw_no_migrations;
-	atomic_t no_bw_no_migrations;
 	atomic_t bw_migrations_lt_inflight;
 	atomic_t no_bw_migrations_lt_inflight;
-	atomic_t bw_migration_ratio;
-	atomic_t no_bw_migration_ratio;
 	atomic_t bw_declined;
 #endif
 };
@@ -222,7 +218,9 @@ struct cache {
 	atomic_t nr_demopromo_migrations;
 	atomic_t nr_writeback_migrations;
 	atomic_t nr_total_migrations;
-	atomic_t sectors_in_flight;
+	atomic_t total_migration_jiffies;
+	atomic_t nr_total_bios;
+	atomic_t total_bio_jiffies;
 	unsigned long reset_migration_accounting;
 
 	/*
@@ -245,8 +243,8 @@ struct cache {
 	unsigned nr_ctr_args;
 	const char **ctr_args;
 
-	unsigned min_migration_average;
-	atomic_t total_migration_jiffies;
+	unsigned min_bio_latency; /* FIXME: reorder */
+	unsigned min_migration_latency;
 	struct dm_kcopyd_client *copier;
 	struct workqueue_struct *wq;
 	struct work_struct worker;
@@ -712,28 +710,34 @@ static int bio_triggers_commit(struct cache *cache, struct bio *bio)
 	return bio->bi_rw & (REQ_FLUSH | REQ_FUA);
 }
 
-static void account_bio(struct cache *cache, struct bio *bio)
+static void __generic_make_request(struct bio *bio)
 {
-	atomic_add(bio_sectors(bio), &cache->sectors_in_flight);
+	union map_info *mi = dm_get_mapinfo(bio);
+
+	mi->ll = jiffies;
+	generic_make_request(bio);
 }
 
-static void discount_bio(struct cache *cache, unsigned size)
+static void account_bio_jiffies(struct cache *cache, struct bio *bio)
 {
-	/* Use bio_sectors() macro avoiding whole bio struct. */
-	struct {
-		unsigned bi_size;
-	} db = {
-		.bi_size = size
-	};
+	union map_info *mi = dm_get_mapinfo(bio);
 
-	atomic_sub(bio_sectors(&db), &cache->sectors_in_flight);
+	atomic_add(jiffies - mi->ll, &cache->total_bio_jiffies);
+	atomic_inc(&cache->nr_total_bios);
+}
+
+static void account_migration_jiffies(struct dm_cache_migration *mg)
+{
+	mg->jiffies = jiffies - mg->jiffies;
+	atomic_add(mg->jiffies, &mg->cache->total_migration_jiffies);
+	atomic_inc(&mg->cache->nr_total_migrations);
 }
 
 /* Don't call from interrupt context! */
 static void issue(struct cache *cache, struct bio *bio)
 {
 	if (!bio_triggers_commit(cache, bio)) {
-		generic_make_request(bio);
+		__generic_make_request(bio);
 		return;
 	}
 
@@ -773,7 +777,7 @@ static void writethrough_endio(struct bio *bio, int err)
 	dm_bio_restore(&pb->bio_details, bio);
 	remap_to_cache(pb->cache, bio, pb->cblock);
 
-	discount_bio(pb->cache, bio->bi_size);
+	account_bio_jiffies(pb->cache, bio);
 
 	/*
 	 * We can't issue this bio directly, since we're in interrupt
@@ -794,11 +798,10 @@ static void remap_to_origin_then_cache(struct cache *cache, struct bio *bio,
 {
 	struct per_bio_data *pb = get_per_bio_data(bio, PB_DATA_SIZE_WT);
 
-	/* FIXME: bio_record() coping with these commented out? */
-	// pb->cache = cache;
+	pb->cache = cache;
 	pb->cblock = cblock;
 	hook_bio(&pb->hook_info, bio, writethrough_endio, NULL);
-	// dm_bio_record(&pb->bio_details, bio);
+	dm_bio_record(&pb->bio_details, bio);
 
 	remap_to_origin_clear_discard(pb->cache, bio, oblock);
 }
@@ -1037,7 +1040,7 @@ static void overwrite_endio(struct bio *bio, int err)
 	spin_lock(&cache->lock);
 	list_add_tail(&mg->list, &cache->completed_migrations);
 	unhook_bio(&pb->hook_info, bio);
-	discount_bio(cache, bio->bi_size);
+	account_bio_jiffies(cache, bio);
 	mg->requeue_holder = false;
 	spin_unlock(&cache->lock);
 
@@ -1051,7 +1054,7 @@ static void issue_overwrite(struct dm_cache_migration *mg, struct bio *bio)
 
 	hook_bio(&pb->hook_info, bio, overwrite_endio, mg);
 	remap_to_cache_dirty(mg->cache, bio, mg->new_oblock, mg->cblock);
-	generic_make_request(bio);
+	__generic_make_request(bio);
 }
 
 static bool bio_writes_complete_block(struct cache *cache, struct bio *bio)
@@ -1088,13 +1091,6 @@ static void issue_copy(struct dm_cache_migration *mg)
 	}
 
 	avoid ? avoid_copy(mg) : issue_copy_real(mg);
-}
-
-static void account_migration_jiffies(struct dm_cache_migration *mg)
-{
-	mg->jiffies = jiffies - mg->jiffies;
-	atomic_add(mg->jiffies, &mg->cache->total_migration_jiffies);
-	atomic_inc(&mg->cache->nr_total_migrations);
 }
 
 static void complete_migration(struct dm_cache_migration *mg)
@@ -1334,40 +1330,73 @@ static void process_discard_bio(struct cache *cache, struct bio *bio)
  *
  * 0       : latency is ok
  * -EPERM  : latency is NOT ok
- * -EINVAL : latency data has been reset after timeout
- * -ENODATA: latency data has been reset w/o previous latency data
  *
  */
-static int migration_latency_ok(struct cache *cache)
+static int migration_latency_ok(struct cache *cache, unsigned *bio_latency, unsigned *migration_latency)
 {
-	unsigned migrations, total_migration_jiffies;
+	unsigned average, bios, total_bio_jiffies, migrations, total_migration_jiffies;
+
+	*bio_latency = *migration_latency = ~0U;
 
 	/* Reset after timeout to take new samples. */
 	if (jiffies > cache->reset_migration_accounting) {
-		bool first = cache->reset_migration_accounting ? false : true;
+		bios = atomic_read(&cache->nr_total_bios);
+		if (bios) {
+			atomic_set(&cache->total_bio_jiffies, atomic_read(&cache->total_bio_jiffies) / bios);
+			atomic_set(&cache->nr_total_bios, 1);
+		} else {
+			atomic_set(&cache->total_bio_jiffies, 0);
+			atomic_set(&cache->nr_total_bios, 0);
+		}
 
-		atomic_set(&cache->nr_total_migrations, 0);
-		atomic_set(&cache->total_migration_jiffies, 0);
-		cache->min_migration_average = ~0U;
-		cache->reset_migration_accounting = jiffies + 10 * HZ;
-		return first ? -ENODATA : -EINVAL;
+		migrations = atomic_read(&cache->nr_total_migrations);
+		if (migrations) {
+			atomic_set(&cache->total_migration_jiffies, atomic_read(&cache->total_migration_jiffies) / migrations);
+			atomic_set(&cache->nr_total_migrations, 1);
+		} else {
+			atomic_set(&cache->total_migration_jiffies, 0);
+			atomic_set(&cache->nr_total_migrations, 0);
+		}
+
+		cache->min_bio_latency = cache->min_migration_latency = ~0U;
+		cache->reset_migration_accounting = jiffies + HZ;
+		smp_wmb();
 	}
 
+	bios = atomic_read(&cache->nr_total_bios);
+	total_bio_jiffies = atomic_read(&cache->total_bio_jiffies);
 	migrations = atomic_read(&cache->nr_total_migrations);
 	total_migration_jiffies = atomic_read(&cache->total_migration_jiffies);
 
-	if (total_migration_jiffies) {
-		unsigned average;
+	if (total_bio_jiffies) {
+		BUG_ON(!bios);
 
+		average = total_bio_jiffies / bios;
+		if (average < cache->min_bio_latency)
+			cache->min_bio_latency = average;
+
+		*bio_latency = average;
+
+	} else
+		*bio_latency = ~0U;
+
+	if (total_migration_jiffies) {
 		BUG_ON(!migrations);
 
 		average = total_migration_jiffies / migrations;
-		if (average < cache->min_migration_average)
-			cache->min_migration_average = average;
+		if (average < cache->min_migration_latency)
+			cache->min_migration_latency = average;
+
+		*migration_latency = average;
 
 		/* As long as average in't more than twice as minumum -> ok */
-		return (average <= (cache->min_migration_average << 1)) ? 0 : -EPERM;
-	}
+		if (bios)
+			return (average < cache->min_bio_latency >> 2) ? 0 : -EPERM;
+		else
+			return (average <= (cache->min_migration_latency << 1)) ? 0 : -EPERM;
+
+	} else
+		*migration_latency = ~0U;
 
 	return -EPERM;
 }
@@ -1377,15 +1406,12 @@ static int migration_latency_ok(struct cache *cache)
  *
  * We either get called because deferred bios are being processed and a promotion/demotion
  * may be proposed by the cache policy _or_ a writeback of a dirty block should happen.
- *
- * FIXME: account bio latencies to help enhance the algorithm?
  */
 static bool spare_migration_bandwidth(struct cache *cache, bool priority)
 {
 	unsigned current_migrations = atomic_read(&cache->nr_demopromo_migrations);
-	unsigned current_writeback_migrations = atomic_read(&cache->nr_writeback_migrations);
-	unsigned current_sectors_in_flight = atomic_read(&cache->sectors_in_flight);
-	int latency_ok = migration_latency_ok(cache);
+	unsigned bio_latency, migration_latency;
+	int latency_ok = migration_latency_ok(cache, &bio_latency, &migration_latency);
 
 	if (priority) {
 		/*
@@ -1395,59 +1421,31 @@ static bool spare_migration_bandwidth(struct cache *cache, bool priority)
 		 */
 #if DEBUG_TARGET
 		if (latency_ok == 0 ||
-		    (latency_ok == -EINVAL && !current_migrations) ||
-		    (latency_ok == -ENODATA && current_migrations < 64)) {
+		    (latency_ok == -EPERM && !current_migrations)) {
 			atomic_inc(&cache->stats.bw_priority);
 			return true;
 		} else
 			atomic_inc(&cache->stats.no_bw_priority);
 #else
 		if (latency_ok == 0 ||
-		    (latency_ok == -EINVAL && !current_migrations) ||
-		    (latency_ok == -ENODATA && current_migrations < 64))
+		    (latency_ok == -EPERM && !current_migrations)) {
 			return true;
 #endif
 
-	} else {
-		/* Only allow writeback while no bios and latency is ok */
-#if DEBUG_TARGET
-		if (!current_sectors_in_flight &&
-		    current_writeback_migrations < (latency_ok ? 5 : 1)) { /* FIXME: sensible? */
-			atomic_inc(&cache->stats.bw_no_migrations);
-			return true;
-		} else
-			atomic_inc(&cache->stats.no_bw_no_migrations);
-#else
-		if (!current_sectors_in_flight &&
-		    current_writeback_migrations < (latency_ok ? 5 : 1)) /* FIXME: sensible? */
-			return true;
-#endif
 	}
 
 	if (latency_ok) {
 #if DEBUG_TARGET
-		if ((current_migrations + current_writeback_migrations) * cache->sectors_per_block * 100 < (current_sectors_in_flight * cache->migration_threshold)) {
+		if (migration_latency * 100 < bio_latency * cache->migration_threshold) {
 			atomic_inc(&cache->stats.bw_migrations_lt_inflight);
 			return true;
 		} else
 			atomic_inc(&cache->stats.no_bw_migrations_lt_inflight);
 #else
-		if ((current_migrations + current_writeback_migrations) * cache->sectors_per_block * 100 < (current_sectors_in_flight * cache->migration_threshold))
+		if (migration_latency * 100 < bio_latency * cache->migration_threshold) {
 			return true;
 #endif
 
-#if DEBUG_TARGET
-		if (!priority && !current_sectors_in_flight && current_migrations &&
-		    current_writeback_migrations < (current_migrations >> 2)) {
-			atomic_inc(&cache->stats.bw_migration_ratio);
-			return true;
-		} else
-			atomic_inc(&cache->stats.no_bw_migration_ratio);
-#else
-		if (!priority && !current_sectors_in_flight && current_migrations &&
-		    current_writeback_migrations < (current_migrations >> 2))
-			return true;
-#endif
 	}
 
 #if DEBUG_TARGET
@@ -1670,7 +1668,7 @@ static void process_deferred_flush_bios(struct cache *cache, bool submit_bios)
 	spin_unlock_irq(&cache->lock);
 
 	while ((bio = bio_list_pop(&bios)))
-		submit_bios ? generic_make_request(bio) : bio_io_error(bio);
+		submit_bios ? __generic_make_request(bio) : bio_io_error(bio);
 }
 
 static void process_deferred_writethrough_bios(struct cache *cache)
@@ -1686,7 +1684,7 @@ static void process_deferred_writethrough_bios(struct cache *cache)
 	spin_unlock_irq(&cache->lock);
 
 	while ((bio = bio_list_pop(&bios)))
-		generic_make_request(bio);
+		__generic_make_request(bio);
 }
 
 static void writeback_some_dirty_blocks(struct cache *cache)
@@ -1763,10 +1761,8 @@ static void requeue_deferred_io(struct cache *cache)
 	bio_list_merge(&bios, &cache->deferred_bios);
 	bio_list_init(&cache->deferred_bios);
 
-	while ((bio = bio_list_pop(&bios))) {
-		discount_bio(cache, bio->bi_size);
+	while ((bio = bio_list_pop(&bios)))
 		bio_endio(bio, DM_ENDIO_REQUEUE);
-	}
 }
 
 static void invalidate_mappings(struct cache *cache)
@@ -2486,7 +2482,9 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	atomic_set(&cache->nr_demopromo_migrations, 0);
 	atomic_set(&cache->nr_writeback_migrations, 0);
 	atomic_set(&cache->nr_total_migrations, 0);
-	atomic_set(&cache->sectors_in_flight, 0);
+	atomic_set(&cache->total_migration_jiffies, 0);
+	atomic_set(&cache->nr_total_bios, 0);
+	atomic_set(&cache->total_bio_jiffies, 0);
 	init_waitqueue_head(&cache->migration_wait);
 
 	r = -ENOMEM;
@@ -2568,12 +2566,8 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	/* FIXME: REMOVEME: devel */
 	atomic_set(&cache->stats.bw_priority, 0);
 	atomic_set(&cache->stats.no_bw_priority, 0);
-	atomic_set(&cache->stats.bw_no_migrations, 0);
-	atomic_set(&cache->stats.no_bw_no_migrations, 0);
 	atomic_set(&cache->stats.bw_migrations_lt_inflight, 0);
 	atomic_set(&cache->stats.no_bw_migrations_lt_inflight, 0);
-	atomic_set(&cache->stats.bw_migration_ratio, 0);
-	atomic_set(&cache->stats.no_bw_migration_ratio, 0);
 	atomic_set(&cache->stats.bw_declined, 0);
 #endif
 
@@ -2655,10 +2649,6 @@ static int cache_map(struct dm_target *ti, struct bio *bio)
 	struct dm_bio_prison_cell *cell;
 	struct policy_result lookup_result;
 	struct per_bio_data *pb;
-	union map_info *mi = dm_get_mapinfo(bio);
-
-	mi->ll = bio->bi_size; /* Save for io volume accounting. */
-	account_bio(cache, bio);
 
 	if (from_oblock(block) > from_oblock(cache->origin_blocks)) {
 		/*
@@ -2778,10 +2768,8 @@ static int cache_end_io(struct dm_target *ti, struct bio *bio, int error)
 	struct cache *cache = ti->private;
 	size_t pb_data_size = get_per_bio_data_size(cache);
 	struct per_bio_data *pb = get_per_bio_data(bio, pb_data_size);
-	union map_info *mi = dm_get_mapinfo(bio);
-	unsigned bi_size = mi->ll;
 
-	discount_bio(cache, bi_size);
+	account_bio_jiffies(cache, bio);
 
 	smp_rmb();
 	if (pb->tick) {
@@ -3083,7 +3071,7 @@ static void cache_status(struct dm_target *ti, status_type_t type,
 		smp_rmb();
 #if DEBUG_TARGET
 		       /* FIXME: REMOVEME: devel */
-		DMEMIT("%llu/%llu %u %u %u %u %u %u %llu %u **%u %u %u,%u/%u,%u/%u,%u/%u,%u/%u,%u** ",
+		DMEMIT("%llu/%llu %u %u %u %u %u %u %llu %u **%u/%u %u %u,%u/%u,%u/%u,%u** ",
 		       (unsigned long long)(nr_blocks_metadata - nr_free_blocks_metadata),
 		       (unsigned long long)nr_blocks_metadata,
 		       (unsigned) atomic_read(&cache->stats.read_hit),
@@ -3094,17 +3082,14 @@ static void cache_status(struct dm_target *ti, status_type_t type,
 		       (unsigned) atomic_read(&cache->stats.promotion),
 		       (unsigned long long) from_cblock(residency),
 		       cache->nr_dirty,
-		       (unsigned) atomic_read(&cache->sectors_in_flight),
+		       (unsigned) cache->min_bio_latency,
+		       (unsigned) cache->min_migration_latency,
 		       (unsigned) atomic_read(&cache->stats.copies_avoided),
 		       (unsigned) atomic_read(&cache->total_migration_jiffies),
 		       (unsigned) atomic_read(&cache->stats.bw_priority),
 		       (unsigned) atomic_read(&cache->stats.no_bw_priority),
-		       (unsigned) atomic_read(&cache->stats.bw_no_migrations),
-		       (unsigned) atomic_read(&cache->stats.no_bw_no_migrations),
 		       (unsigned) atomic_read(&cache->stats.no_bw_migrations_lt_inflight),
 		       (unsigned) atomic_read(&cache->stats.no_bw_migrations_lt_inflight),
-		       (unsigned) atomic_read(&cache->stats.bw_migration_ratio),
-		       (unsigned) atomic_read(&cache->stats.no_bw_migration_ratio),
 		       (unsigned) atomic_read(&cache->stats.bw_declined));
 #else
 		DMEMIT("%llu/%llu %u %u %u %u %u %u %llu %u ",
