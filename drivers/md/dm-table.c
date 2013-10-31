@@ -545,14 +545,28 @@ static int adjoin(struct dm_table *table, struct dm_target *ti)
 
 /*
  * Used to dynamically allocate the arg array.
+ *
+ * We do first allocation with GFP_NOIO because dm-mpath and dm-thin must
+ * process messages even if some device is suspended. These messages have a
+ * small fixed number of arguments.
+ *
+ * On the other hand, dm-switch needs to process bulk data using messages and
+ * excessive use of GFP_NOIO could cause trouble.
  */
 static char **realloc_argv(unsigned *array_size, char **old_argv)
 {
 	char **argv;
 	unsigned new_size;
+	gfp_t gfp;
 
-	new_size = *array_size ? *array_size * 2 : 64;
-	argv = kmalloc(new_size * sizeof(*argv), GFP_KERNEL);
+	if (*array_size) {
+		new_size = *array_size * 2;
+		gfp = GFP_KERNEL;
+	} else {
+		new_size = 8;
+		gfp = GFP_NOIO;
+	}
+	argv = kmalloc(new_size * sizeof(*argv), gfp);
 	if (argv) {
 		memcpy(argv, old_argv, *array_size * sizeof(*argv));
 		*array_size = new_size;
@@ -1363,9 +1377,6 @@ static bool dm_table_discard_zeroes_data(struct dm_table *t)
 	while (i < dm_table_get_num_targets(t)) {
 		ti = dm_table_get_target(t, i++);
 
-		if (ti->pretend_discard_zeroes_data)
-			return 1;
-
 		if (ti->discard_zeroes_data_unsupported)
 			return 0;
 	}
@@ -1646,16 +1657,13 @@ bool dm_table_supports_discards(struct dm_table *t)
 		if (!ti->num_discard_bios)
 			continue;
 
-		if (ti->discards_unsupported)
-			return false;
-
 		if (ti->discards_supported)
-			return true;
+			return 1;
 
 		if (ti->type->iterate_devices &&
 		    ti->type->iterate_devices(ti, device_discard_capable, NULL))
-			return true;
+			return 1;
 	}
 
-	return false;
+	return 0;
 }

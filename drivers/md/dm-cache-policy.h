@@ -144,10 +144,10 @@ struct dm_cache_policy {
 	 *
 	 * Returns:
 	 *
-	 * 0       if block is in cache _and_ set/clear respectively succeded
+	 * 0	   if block is in cache _and_ set/clear respectively succeded
 	 *
 	 * -EINVAL if block is in cache _but_ block was already set to dirty
-	 *  	   on a set call / clean on a clean call
+	 *	   on a set call / clean on a clean call
 	 *
 	 * -ENOENT if block is not in cache
 	 */
@@ -183,12 +183,11 @@ struct dm_cache_policy {
 	 * -EINVAL: invalidation not supported
 	 *
 	 * -ENOENT: no entry for @oblock in the cache
-	 * 
+	 *
 	 * -ENODATA: all possible invalidation requests processed
 	 *
 	 * May return a _different_ oblock than the requested one
 	 * to allow the policy to rule which block to invalidate (e.g. era).
-	 *
 	 */
 	int (*invalidate_mapping)(struct dm_cache_policy *p, dm_oblock_t *oblock, dm_cblock_t *cblock);
 
@@ -200,7 +199,6 @@ struct dm_cache_policy {
 	 * 0 and @cblock,@oblock: block to write back provided
 	 *
 	 * -ENODATA: no dirty blocks available
-	 *
 	 */
 	int (*writeback_work)(struct dm_cache_policy *p, dm_oblock_t *oblock, dm_cblock_t *cblock);
 

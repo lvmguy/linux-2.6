@@ -41,19 +41,18 @@ struct era_policy {
 
 	struct mutex lock;	/* FIXME: spinlock? */
 
-	era_t era_counter;
-
 	dm_cblock_t cache_size;
 
 	era_t *cb_to_era;
 
-	/* Temporary store fro unamp information during invalidation. */
+	era_t era_counter;
+
+	/* Temporary store for unmap information during invalidation. */
 	struct {
 		unsigned long *bitset;
 		dm_oblock_t *oblocks;
 		unsigned long last_cblock;
 	} invalidate;
-
 };
 
 /*----------------------------------------------------------------*/
@@ -124,8 +123,7 @@ err:
 
 typedef int (*era_match_fn_t)(era_t, era_t);
 
-static int incr_era_counter(struct era_policy *era,
-			    const char *curr_era_str,
+static int incr_era_counter(struct era_policy *era, const char *curr_era_str,
 			    era_match_fn_t dummy)
 {
 	era_t curr_era_counter;
@@ -210,7 +208,6 @@ static int era_inval_oblocks(void *context, dm_cblock_t cblock,
 			"marking mapping to be removed for oblock %llu.",
 			from_cblock(cblock), act_era, ctx->test_era, oblock);
 #endif
-
 		set_bit(from_cblock(cblock), ctx->era->invalidate.bitset);
 		ctx->era->invalidate.oblocks[from_cblock(cblock)] = oblock;
 	}
@@ -268,12 +265,13 @@ static int cond_unmap_by_era(struct era_policy *era, const char *test_era_str,
 static void era_destroy(struct dm_cache_policy *p)
 {
 	struct era_policy *era = to_era_policy(p);
+
+#if DEBUG_ERA
+	DMDEBUG("destroying era %p", era);
+#endif
 	free_invalidate(era);
 	vfree(era->cb_to_era);
 	kfree(era);
-#if DEBUG_ERA
-	DMDEBUG("destroyed era %p", era);
-#endif
 }
 
 static int era_map(struct dm_cache_policy *p, dm_oblock_t oblock,
@@ -378,8 +376,7 @@ static void era_force_mapping(struct dm_cache_policy *p, dm_oblock_t old_oblock,
 #if DEBUG_ERA
 		DMDEBUG("assigned era %u to cblock %u, oblock %llu "
 			"(old_oblock %llu) due to force_mapping.",
-			era->era_counter, cblock, new_oblock,
-			old_oblock);
+			era->era_counter, cblock, new_oblock, old_oblock);
 #endif
 	}
 
@@ -411,7 +408,6 @@ static int era_invalidate_mapping(struct dm_cache_policy *p,
 	r = __find_invalidate_block(era, cblock);
 	if (r < 0)
 		free_invalidate(era);
-
 	else {
 		BUG_ON(from_cblock(*cblock) >= from_cblock(era->cache_size));
 		BUG_ON(!test_bit(from_cblock(*cblock), era->invalidate.bitset));

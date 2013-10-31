@@ -145,8 +145,8 @@ static int check_metadata_version(struct cache_disk_superblock *disk_super)
 {
 	uint32_t metadata_version = le32_to_cpu(disk_super->version);
 	if (metadata_version < MIN_CACHE_VERSION || metadata_version > MAX_CACHE_VERSION) {
-		DMERR("kernel does not support this version of cache metadata (%u)",
-		      metadata_version);
+		DMERR("Cache metadata version %u found, but only versions between %u and %u supported.",
+		      metadata_version, MIN_CACHE_VERSION, MAX_CACHE_VERSION);
 		return -EINVAL;
 	}
 
@@ -279,10 +279,8 @@ static int __setup_mapping_info(struct dm_cache_metadata *cmd)
 
 static void __destroy_mapping_info(struct dm_cache_metadata *cmd)
 {
-	if (cmd->policy_hint_value_buffer)
-		kfree(cmd->policy_hint_value_buffer);
+	kfree(cmd->policy_hint_value_buffer);
 }
-
 
 static int __write_initial_superblock(struct dm_cache_metadata *cmd)
 {
@@ -751,7 +749,7 @@ void dm_cache_metadata_close(struct dm_cache_metadata *cmd)
 }
 
 /*
- * Checks that the given cache block is either unmapped, or clean.
+ * Checks that the given cache block is either unmapped or clean.
  */
 static int block_unmapped_or_clean(struct dm_cache_metadata *cmd, dm_cblock_t b,
 				   bool *result)
@@ -774,8 +772,7 @@ static int block_unmapped_or_clean(struct dm_cache_metadata *cmd, dm_cblock_t b,
 }
 
 static int blocks_are_unmapped_or_clean(struct dm_cache_metadata *cmd,
-					dm_cblock_t begin,
-					dm_cblock_t end,
+					dm_cblock_t begin, dm_cblock_t end,
 					bool *result)
 {
 	int r;
@@ -808,12 +805,15 @@ int dm_cache_resize(struct dm_cache_metadata *cmd, dm_cblock_t new_cache_size)
 
 	if (from_cblock(new_cache_size) < from_cblock(cmd->cache_blocks)) {
 		r = blocks_are_unmapped_or_clean(cmd, new_cache_size, cmd->cache_blocks, &clean);
-		if (r)
+		if (r) {
+			__dm_unbless_for_disk(&null_mapping);
 			goto out;
+		}
 
 		if (!clean) {
 			DMERR("unable to shrink cache due to dirty blocks");
 			r = -EINVAL;
+			__dm_unbless_for_disk(&null_mapping);
 			goto out;
 		}
 	}
@@ -1317,8 +1317,10 @@ int dm_cache_save_hint(struct dm_cache_metadata *cmd, dm_cblock_t cblock, void *
 {
 	int r;
 
-	if (!hints_array_initialized(cmd))
+	if (!hints_array_initialized(cmd)) {
+		__dm_unbless_for_disk(hint);
 		return 0;
+	}
 
 	down_write(&cmd->root_lock);
 	r = save_hint(cmd, cblock, hint);
