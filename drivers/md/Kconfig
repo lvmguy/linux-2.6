@@ -488,4 +488,12 @@ config DM_CACHE_TRC
          A cache policy shim that adds debug tracing for all cache policy
 	 interface function calls, along with a configurable trace level.
 
+config DM_CACHE_TIMING
+       tristate "Various locking primitives timing tests"
+       depends on DM_TEST_TARGETS
+       depends on DM_CACHE
+       default y
+       ---help---
+         Just timing some spinlocks and stuff.
+
 endif # MD
