@@ -225,7 +225,7 @@ struct cache {
 
 	struct {
 		unsigned nr;
-		unsigned jiffies;
+		unsigned ms;
 		unsigned prev_avg;
 	} latency[t_size];
 
@@ -723,7 +723,7 @@ static void __generic_make_request(struct bio *bio)
 	generic_make_request(bio);
 }
 
-static unsigned long __delta_jiffies_wrapsave(unsigned long start_jiffies)
+static unsigned long __delta_usecs_wrapsave(unsigned long start_jiffies)
 {
 	unsigned long j = jiffies, r;
 
@@ -732,12 +732,12 @@ static unsigned long __delta_jiffies_wrapsave(unsigned long start_jiffies)
 	else
 		r = j - start_jiffies;
 
-	return r << 4;
+	return jiffies_to_usecs(r);
 }
 
 static void __account_jiffies(struct cache *cache, unsigned t, unsigned long start_jiffies)
 {
-	cache->latency[t].jiffies += __delta_jiffies_wrapsave(start_jiffies);
+	cache->latency[t].ms += __delta_usecs_wrapsave(start_jiffies);
 	cache->latency[t].nr++;
 }
 
@@ -757,6 +757,8 @@ static void account_migration_jiffies(struct dm_cache_migration *mg)
 /* Don't call from interrupt context! */
 static void issue(struct cache *cache, struct bio *bio)
 {
+	BUG_ON(in_interrupt());
+
 	if (!bio_triggers_commit(cache, bio)) {
 		__generic_make_request(bio);
 		return;
@@ -1350,7 +1352,7 @@ static void process_discard_bio(struct cache *cache, struct bio *bio)
 static void init_latency(struct cache *cache, unsigned t, bool complete)
 {
 	cache->latency[t].nr = 0;
-	cache->latency[t].jiffies = 0;
+	cache->latency[t].ms = 0;
 
 	if (complete)
 		cache->latency[t].prev_avg = 0;
@@ -1361,36 +1363,33 @@ static void init_latency(struct cache *cache, unsigned t, bool complete)
  */
 static void calculate_average_latency(struct cache *cache, unsigned *latency)
 {
-	unsigned nr, t;
+	unsigned nr, prev_avg, t;
+	unsigned long j = jiffies;
 
 	spin_lock_irq(&cache->lock);
 
 	/* Reset after timeout to take new samples. */
-	if (jiffies > cache->reset_migration_accounting) { /* FIXME: make wrap save. */
+	if (time_after(j, cache->reset_migration_accounting)) {
 		for (t = 0; t < t_size; t++) {
 			nr = cache->latency[t].nr;
 			if (nr) {
-				unsigned prev_avg = cache->latency[t].prev_avg;
-
-				cache->latency[t].prev_avg = (prev_avg + cache->latency[t].jiffies / nr) / (prev_avg ? 2 : 1);
+				prev_avg = cache->latency[t].prev_avg;
+				cache->latency[t].prev_avg = (prev_avg + cache->latency[t].ms / nr) / (prev_avg ? 2 : 1);
 			} else
 				cache->latency[t].prev_avg /= 2;
 
 			init_latency(cache, t, false);
 		}
 
-		cache->reset_migration_accounting = jiffies + HZ;
+		cache->reset_migration_accounting = j + HZ;
 	}
 
+	/* Calculate average. */
 	for (t = 0; t < t_size; t++) {
-		unsigned prev_avg;
-
-		latency[t] = cache->latency[t].jiffies;
+		latency[t] = cache->latency[t].ms;
 		nr = cache->latency[t].nr;
-		if (nr) {
-			BUG_ON(!latency[t]);
+		if (nr)
 			latency[t] /= nr;
-		}
 
 		prev_avg = cache->latency[t].prev_avg;
 		if (prev_avg) {
@@ -1447,7 +1446,7 @@ static bool spare_migration_bandwidth(struct cache *cache, bool priority)
 	if (latency[t_migrations])
 		return false;
 	
-	return !atomic_read(&cache->nr_writeback_migrations);
+	return atomic_read(&cache->nr_writeback_migrations) ? false : true;
 }
 
 static void inc_hit_counter(struct cache *cache, struct bio *bio)
@@ -1710,7 +1709,7 @@ static void writeback_some_dirty_blocks(struct cache *cache)
 		}
 
 		writeback(cache, &structs, oblock, cblock, old_ocell);
-		break; // FIXME: flurry of writebacks.
+break; // FIXME: flurry of writebacks.
 	}
 
 	prealloc_free_structs(cache, &structs);
