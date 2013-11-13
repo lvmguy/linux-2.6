@@ -652,12 +652,12 @@ static void remap_to_cache(struct cache *cache, struct bio *bio,
 	sector_t bi_sector = bio->bi_sector;
 
 	bio->bi_bdev = cache->cache_dev->bdev;
-	if (!block_size_is_power_of_two(cache))
-		bio->bi_sector = (from_cblock(cblock) * cache->sectors_per_block) +
-				sector_div(bi_sector, cache->sectors_per_block);
-	else
+	if (block_size_is_power_of_two(cache))
 		bio->bi_sector = (from_cblock(cblock) << cache->sectors_per_block_shift) |
 				 (bi_sector & cache->sectors_per_block_mask);
+	else
+		bio->bi_sector = (from_cblock(cblock) * cache->sectors_per_block) +
+				 sector_div(bi_sector, cache->sectors_per_block);
 }
 
 /* Don't call from interrupt context! */
