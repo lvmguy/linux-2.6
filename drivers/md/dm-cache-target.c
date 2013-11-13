@@ -225,7 +225,7 @@ struct cache {
 
 	struct {
 		unsigned nr;
-		unsigned ms;
+		unsigned us;
 		unsigned prev_avg;
 	} latency[t_size];
 
@@ -723,7 +723,7 @@ static void __generic_make_request(struct bio *bio)
 	generic_make_request(bio);
 }
 
-static unsigned long __delta_usecs_wrapsave(unsigned long start_jiffies)
+static unsigned int __delta_usecs_wrapsave(unsigned long start_jiffies)
 {
 	unsigned long j = jiffies, r;
 
@@ -737,7 +737,7 @@ static unsigned long __delta_usecs_wrapsave(unsigned long start_jiffies)
 
 static void __account_jiffies(struct cache *cache, unsigned t, unsigned long start_jiffies)
 {
-	cache->latency[t].ms += __delta_usecs_wrapsave(start_jiffies);
+	cache->latency[t].us += __delta_usecs_wrapsave(start_jiffies);
 	cache->latency[t].nr++;
 }
 
@@ -777,6 +777,8 @@ static void issue(struct cache *cache, struct bio *bio)
 /* In interrupt context. */
 static void defer_writethrough_bio(struct cache *cache, struct bio *bio)
 {
+	BUG_ON(!in_interrupt());
+
 	spin_lock(&cache->lock);
 	bio_list_add(&cache->deferred_writethrough_bios, bio);
 	spin_unlock(&cache->lock);
@@ -881,8 +883,11 @@ static void cell_defer(struct cache *cache, struct dm_bio_prison_cell *cell,
 
 static void cleanup_migration(struct dm_cache_migration *mg)
 {
-	dec_nr_migrations(mg->cache, mg->writeback);
+	struct cache *cache = mg->cache;
+	bool writeback = mg->writeback;
+
 	free_migration(mg);
+	dec_nr_migrations(cache, writeback);
 }
 
 static void adjust_policy_dirty(struct dm_cache_migration *mg)
@@ -927,6 +932,7 @@ static void migration_success_pre_commit(struct dm_cache_migration *mg)
 	struct cache *cache = mg->cache;
 
 	/* FIXME: what if mg->err? */
+	BUG_ON(in_interrupt());
 
 	if (mg->writeback) {
 		clear_dirty(cache, mg->old_oblock, mg->cblock);
@@ -980,6 +986,8 @@ static void migration_success_post_commit(struct dm_cache_migration *mg)
 
 		if (mg->promote) {
 			mg->demote = false;
+
+			BUG_ON(in_interrupt());
 
 			spin_lock_irq(&cache->lock);
 			list_add_tail(&mg->list, &cache->quiesced_migrations);
@@ -1138,6 +1146,8 @@ static void process_migrations(struct cache *cache, struct list_head *head,
 
 	INIT_LIST_HEAD(&list);
 
+	BUG_ON(in_interrupt());
+
 	spin_lock_irq(&cache->lock);
 	list_splice_init(head, &list);
 	spin_unlock_irq(&cache->lock);
@@ -1155,6 +1165,8 @@ static void __queue_quiesced_migration(struct dm_cache_migration *mg)
 static void queue_quiesced_migration(struct dm_cache_migration *mg)
 {
 	struct cache *cache = mg->cache;
+
+	BUG_ON(in_interrupt());
 
 	spin_lock_irq(&cache->lock);
 	__queue_quiesced_migration(mg);
@@ -1301,6 +1313,8 @@ static void invalidate(struct cache *cache, struct prealloc *structs,
 /* Don't call from interrupt context! */
 static void defer_bio(struct cache *cache, struct bio *bio)
 {
+	BUG_ON(in_interrupt());
+
 	spin_lock_irq(&cache->lock);
 	bio_list_add(&cache->deferred_bios, bio);
 	spin_unlock_irq(&cache->lock);
@@ -1349,13 +1363,20 @@ static void process_discard_bio(struct cache *cache, struct bio *bio)
 	bio_endio(bio, 0);
 }
 
-static void init_latency(struct cache *cache, unsigned t, bool complete)
+static void init_latency(struct cache *cache, unsigned t, unsigned latency)
 {
 	cache->latency[t].nr = 0;
-	cache->latency[t].ms = 0;
+	cache->latency[t].us = 0;
+	cache->latency[t].prev_avg = latency;
+}
 
-	if (complete)
-		cache->latency[t].prev_avg = 0;
+static bool migration_is_congested(struct cache *cache)
+{
+	struct request_queue *qc = bdev_get_queue(cache->cache_dev->bdev);
+	struct request_queue *qo = bdev_get_queue(cache->origin_dev->bdev);
+
+	return bdi_rw_congested(&qc->backing_dev_info) ||
+	       bdi_rw_congested(&qo->backing_dev_info);
 }
 
 /*
@@ -1363,40 +1384,31 @@ static void init_latency(struct cache *cache, unsigned t, bool complete)
  */
 static void calculate_average_latency(struct cache *cache, unsigned *latency)
 {
-	unsigned nr, prev_avg, t;
+	unsigned avg, nr, t;
 	unsigned long j = jiffies;
+	bool reset = unlikely(time_after(j, cache->reset_migration_accounting));
+
+	BUG_ON(in_interrupt());
 
 	spin_lock_irq(&cache->lock);
 
-	/* Reset after timeout to take new samples. */
-	if (time_after(j, cache->reset_migration_accounting)) {
-		for (t = 0; t < t_size; t++) {
-			nr = cache->latency[t].nr;
-			if (nr) {
-				prev_avg = cache->latency[t].prev_avg;
-				cache->latency[t].prev_avg = (prev_avg + cache->latency[t].ms / nr) / (prev_avg ? 2 : 1);
-			} else
-				cache->latency[t].prev_avg /= 2;
-
-			init_latency(cache, t, false);
-		}
-
-		cache->reset_migration_accounting = j + HZ;
-	}
-
-	/* Calculate average. */
+	/* Calculate average latency and reset after timeout to take new samples. */
 	for (t = 0; t < t_size; t++) {
-		latency[t] = cache->latency[t].ms;
+		avg = cache->latency[t].prev_avg;
 		nr = cache->latency[t].nr;
 		if (nr)
-			latency[t] /= nr;
+			avg = (avg + cache->latency[t].us / nr) / (avg ? 2 : 1);
+		else if (unlikely(reset))
+			avg = 0;
 
-		prev_avg = cache->latency[t].prev_avg;
-		if (prev_avg) {
-			latency[t] += prev_avg;
-			latency[t] /= 2;
-		}
+		latency[t] = avg;
+
+		if (unlikely(reset))
+			init_latency(cache, t, avg);
 	}
+
+	if (unlikely(reset))
+		cache->reset_migration_accounting = j + HZ;
 
 	spin_unlock_irq(&cache->lock);
 }
@@ -1413,39 +1425,47 @@ static bool spare_migration_bandwidth(struct cache *cache, bool priority)
 
 	if (priority && !atomic_read(&cache->nr_demopromo_migrations)) {
 		/*
-		 * Always allow demotions/promotions while we have decent latencies or at least 1 
-		 *
-		 * Special case is to allow more in case we don't have any latency samples so far
+		 * Always allow at least one demotion/promotion
 		 */
-#if DEBUG_TARGET
-		atomic_inc(&cache->stats.bw_priority);
-		return true;
-	} else
-		atomic_inc(&cache->stats.no_bw_priority);
-#else
 		return true;
 	}
-#endif
+
+	/* FIXME: distinguish read+writes. */
+	if (migration_is_congested(cache))
+		return false;
 
 	calculate_average_latency(cache, latency);
 
+	if (latency[t_bios] + latency[t_migrations] > 500000U);
+		return false;
+
+	/* FIXME: REMOVEME: safety net. */
+	if (atomic_read(&cache->nr_demopromo_migrations) + atomic_read(&cache->nr_writeback_migrations) > 255)
+		return false;
+
 #if DEBUG_TARGET
-	if (latency[t_migrations] && latency[t_migrations] * 100 < latency[t_bios] * cache->migration_threshold) {
+	if (latency[t_bios]) {
+		if (latency[t_migrations] &&
+		    (latency[t_migrations] * 100 < latency[t_bios] * cache->migration_threshold)) {
+			atomic_inc(&cache->stats.bw_migrations_lt_inflight);
+			return true;
+		}
+	} else if (latency[t_migrations] <= min(cache->latency[t_migrations].prev_avg, 300000U)) {
 		atomic_inc(&cache->stats.bw_migrations_lt_inflight);
 		return true;
-	} else
-		atomic_inc(&cache->stats.no_bw_migrations_lt_inflight);
+	}
+
+	atomic_inc(&cache->stats.no_bw_migrations_lt_inflight);
 #else
-	if (latency[t_migrations] && latency[t_migrations] * 100 < latency[t_bios] * cache->migration_threshold) {
+	if (latency[t_bios] &&
+	    latency[t_migrations] &&
+	    (latency[t_migrations] * 100 < latency[t_bios] * cache->migration_threshold))
 		return true;
 #endif
 
 #if DEBUG_TARGET
 	atomic_inc(&cache->stats.bw_declined);
 #endif
-	if (latency[t_migrations])
-		return false;
-	
 	return atomic_read(&cache->nr_writeback_migrations) ? false : true;
 }
 
@@ -1619,6 +1639,8 @@ static void process_deferred_bios(struct cache *cache)
 	memset(&structs, 0, sizeof(structs));
 	bio_list_init(&bios);
 
+	BUG_ON(in_interrupt());
+
 	spin_lock_irq(&cache->lock);
 	bio_list_merge(&bios, &cache->deferred_bios);
 	bio_list_init(&cache->deferred_bios);
@@ -1657,6 +1679,8 @@ static void process_deferred_flush_bios(struct cache *cache, bool submit_bios)
 
 	bio_list_init(&bios);
 
+	BUG_ON(in_interrupt());
+
 	spin_lock_irq(&cache->lock);
 	bio_list_merge(&bios, &cache->deferred_flush_bios);
 	bio_list_init(&cache->deferred_flush_bios);
@@ -1672,6 +1696,8 @@ static void process_deferred_writethrough_bios(struct cache *cache)
 	struct bio *bio;
 
 	bio_list_init(&bios);
+
+	BUG_ON(in_interrupt());
 
 	spin_lock_irq(&cache->lock);
 	bio_list_merge(&bios, &cache->deferred_writethrough_bios);
@@ -1744,7 +1770,7 @@ static void ack_quiescing(struct cache *cache)
 static void wait_for_migrations(struct cache *cache)
 {
 	wait_event(cache->migration_wait,
-		   !atomic_read(&cache->nr_demopromo_migrations) && !atomic_read(&cache->nr_writeback_migrations));
+		   !(atomic_read(&cache->nr_demopromo_migrations) + atomic_read(&cache->nr_writeback_migrations)));
 }
 
 static void stop_worker(struct cache *cache)
@@ -2491,8 +2517,8 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	atomic_set(&cache->quiescing, 0);
 	atomic_set(&cache->quiescing_ack, 0);
 
-	init_latency(cache, t_bios, true);
-	init_latency(cache, t_migrations, true);
+	init_latency(cache, t_bios, 0);
+	init_latency(cache, t_migrations, 0);
 
 	r = -ENOMEM;
 	cache->nr_dirty = 0;
@@ -3080,8 +3106,8 @@ static void cache_status(struct dm_target *ti, status_type_t type,
 
 		smp_rmb();
 #if DEBUG_TARGET
-		       /* FIXME: REMOVEME: devel */
-		DMEMIT("%llu/%llu %u %u %u %u %u %u %llu %u **%u/%u %u %u,%u/%u,%u %u** ",
+		/* FIXME: REMOVEME: devel */
+		DMEMIT("%llu/%llu %u %u %u %u %u %u %llu %u **%u/%u %u/%u %u %u/%u,%u/%u %u** ",
 		       (unsigned long long)(nr_blocks_metadata - nr_free_blocks_metadata),
 		       (unsigned long long)nr_blocks_metadata,
 		       (unsigned) atomic_read(&cache->stats.read_hit),
@@ -3094,6 +3120,8 @@ static void cache_status(struct dm_target *ti, status_type_t type,
 		       cache->nr_dirty,
 		       (unsigned) cache->latency[t_bios].prev_avg,
 		       (unsigned) cache->latency[t_migrations].prev_avg,
+		       (unsigned) atomic_read(&cache->nr_demopromo_migrations),
+		       (unsigned) atomic_read(&cache->nr_writeback_migrations),
 		       (unsigned) atomic_read(&cache->stats.copies_avoided),
 		       (unsigned) atomic_read(&cache->stats.bw_priority),
 		       (unsigned) atomic_read(&cache->stats.no_bw_priority),
