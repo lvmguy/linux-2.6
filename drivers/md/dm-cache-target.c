@@ -206,6 +206,7 @@ struct cache {
 	 * Fields for converting from sectors to blocks.
 	 */
 	uint32_t sectors_per_block;
+	sector_t sectors_per_block_mask;
 	int sectors_per_block_shift;
 
 	spinlock_t lock;
@@ -656,7 +657,7 @@ static void remap_to_cache(struct cache *cache, struct bio *bio,
 				sector_div(bi_sector, cache->sectors_per_block);
 	else
 		bio->bi_sector = (from_cblock(cblock) << cache->sectors_per_block_shift) |
-				(bi_sector & (cache->sectors_per_block - 1));
+				 (bi_sector & cache->sectors_per_block_mask);
 }
 
 /* Don't call from interrupt context! */
@@ -2451,6 +2452,8 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 		r = -EINVAL;
 		goto bad;
 	}
+
+	cache->sectors_per_block_mask = (sector_t) ca->block_size - 1;
 
 	if (ca->block_size & (ca->block_size - 1)) {
 		dm_block_t cache_size = ca->cache_sectors;
