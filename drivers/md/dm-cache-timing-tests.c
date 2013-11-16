@@ -15,6 +15,7 @@
 
 #include "dm.h"
 
+#include <linux/random.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 
@@ -28,6 +29,26 @@ static DEFINE_SEMAPHORE(sem);
 static DECLARE_RWSEM(rwsem);
 static struct workqueue_struct *wq = NULL;
 static struct work_struct worker1, worker2;
+
+static void enforce_local(void)
+{
+	preempt_disable();
+	local_irq_disable();
+}
+
+static void disable_local(void)
+{
+	local_irq_enable();
+	preempt_enable();
+}
+
+static void __tst_func(void)
+{
+	return;
+}
+
+static void (*f)(void) = __tst_func;
+static struct bio global_bio;
 
 static unsigned long test_spin_lock(unsigned c)
 {
@@ -150,9 +171,286 @@ static unsigned long test_smp_wmb(unsigned c)
 	return jiffies - start;
 }
 
+static unsigned long test_function_pointer_call_ext(unsigned c)
+{
+	unsigned long r, start;
+
+	enforce_local();
+
+	start = jiffies;
+	while (c--)
+		f();
+
+	r = jiffies - start;
+
+	disable_local();
+
+	return r;
+}
+
+static unsigned long test_function_pointer_call_int(unsigned c)
+{
+	unsigned long r, start;
+	void (*f)(void) = __tst_func;
+
+	enforce_local();
+
+	start = jiffies;
+	while (c--)
+		f();
+
+	r = jiffies - start;
+
+	disable_local();
+
+	return r;
+}
+
+static unsigned long test_function_call(unsigned c)
+{
+	unsigned long r, start = jiffies;
+
+	enforce_local();
+
+	while (c--)
+		__tst_func();
+
+	r = jiffies - start;
+
+	disable_local();
+
+	return r;
+}
+
+struct cache {
+	unsigned sectors_per_block_shift;
+};
+
+static struct cache cache = {
+	.sectors_per_block_shift = -1,
+};
+
+static bool block_size_is_power_of_two(struct cache *cache)
+{
+	return cache->sectors_per_block_shift >= 0;
+}
+
+static unsigned long test_conditional(unsigned c)
+{
+	unsigned long start, r;
+	struct bio *bio = &global_bio;
+
+	enforce_local();
+
+	start = jiffies;
+	while (c--) {
+		if (block_size_is_power_of_two(&cache))
+			bio->bi_sector = 0;
+		else
+			bio->bi_sector = 1;
+	}
+
+	r = jiffies - start;
+
+	disable_local();
+
+	return r;
+}
+
+static const unsigned long m1 = 0x9e37fffffffc0001UL;
+static const unsigned bits = 18U;
+
+/* Joe's 1st hash function. */
+static uint64_t hash1(uint32_t b)
+{
+	// return (ffs(b) << m1) >> bits;
+	return (b * m1) >> bits;
+}
+
+/* Joe's 2nd hash function. */
+static uint64_t hash2(uint32_t b)
+{
+	uint32_t n = b;
+
+	n = n ^ (n >> 16);
+	n = n * 0x85ebca6bu;
+	n = n ^ (n >> 13);
+	n = n * 0xc2b2ae35u;
+	n = n ^ (n >> 16);
+
+	return n;
+}
+
+/* Bloom fnv */
+static uint64_t hash3(uint32_t b)
+{
+	uint64_t n = 0xcbf29ce484222325ULL;
+	const uint64_t magic_prime = 0x00000100000001b3ULL;
+ 
+	const uint8_t *p = (uint8_t*) &b, *end = p + 4;
+
+	while (p < end)
+		n = (n ^ *(p++)) * magic_prime;
+#if 0
+		n ^= *(p++), n *= magic_prime;
+#endif
+
+	return n;
+}
+
+static unsigned long test_joes_bloom_hash1(unsigned c)
+{
+	unsigned long start, r;
+	uint64_t bs = 0;
+	unsigned long *pbs = (unsigned long *) &bs;
+
+	enforce_local();
+
+	start = jiffies;
+	while (c--)
+		set_bit(hash1(64) & 0x0F, pbs);
+
+	r = jiffies - start;
+
+	disable_local();
+
+	return r;
+}
+
+static unsigned long test_joes_bloom_hash2(unsigned c)
+{
+	unsigned long start, r;
+	uint64_t bs = 0;
+	unsigned long *pbs = (unsigned long *) &bs;
+
+	enforce_local();
+
+	start = jiffies;
+	while (c--)
+		set_bit(hash2(64) & 0x0F, pbs);
+
+	r = jiffies - start;
+
+	disable_local();
+
+	return r;
+}
+
+static unsigned long test_joes_bloom_hash1and2(unsigned c)
+{
+	unsigned long start, r;
+	uint64_t bs = 0;
+	unsigned long *pbs = (unsigned long *) &bs;
+
+	enforce_local();
+
+	start = jiffies;
+	while (c--) {
+		set_bit(hash1(64) & 0x0F, pbs);
+		set_bit(hash2(64) & 0x0F, pbs);
+	}
+
+	r = jiffies - start;
+
+	disable_local();
+
+	return r;
+}
+
+static unsigned long test_bloom_fnv_hash(unsigned c)
+{
+	unsigned long start, r;
+	uint64_t bs = 0;
+	unsigned long *pbs = (unsigned long *) &bs;
+
+	enforce_local();
+
+	start = jiffies;
+	while (c--)
+		set_bit(hash3(64) & 0x0F, pbs);
+
+	r = jiffies - start;
+
+	disable_local();
+
+	return r;
+}
+
+static unsigned long test_512m_array_linear(unsigned c)
+{
+	unsigned long start, r;
+	uint32_t *a;
+	const unsigned m = 512 * 1024 * 1024 / sizeof(*a);
+	unsigned i = m;
+
+	a = vmalloc(sizeof(*a) * m);
+	if (!a)
+		return ~0UL;
+
+	enforce_local();
+
+	start = jiffies;
+	while (c--) {
+		i--;
+		a[i] = i;
+
+		if (unlikely(!i))
+			i = m;
+	}
+
+	r = jiffies - start;
+
+	disable_local();
+
+	vfree(a);
+
+	return r;
+}
+
+static unsigned long test_512m_array_random(unsigned c)
+{
+	unsigned long start, r;
+	uint32_t *a;
+	const unsigned m = 512 * 1024 * 1024 / sizeof(*a);
+	unsigned i = m, end = m - 1;
+
+	a = vmalloc(sizeof(*a) * m);
+	if (!a)
+		return ~0UL;
+
+	enforce_local();
+
+	start = jiffies;
+	while (c--) {
+		i = min(end, prandom_u32());
+		a[i] = i;
+	}
+
+	r = jiffies - start;
+
+	disable_local();
+
+	vfree(a);
+
+	return r;
+}
+
 static void perform_tests(const char *caller)
 {
 	DMINFO("%s - *** performing tests %u times ***", caller, amount);
+	DMINFO("%s - functon call()=%lu jiffies", caller, test_function_call(amount * 10));
+	DMINFO("%s - functon pointer call with internal pointer()=%lu jiffies", caller, test_function_pointer_call_int(amount * 10));
+	DMINFO("%s - functon pointer call with external pointer()=%lu jiffies", caller, test_function_pointer_call_ext(amount * 10));
+	DMINFO("%s - conditional=%lu jiffies", caller, test_conditional(amount * 10));
+	amount *= 10;
+	DMINFO("%s - *** performing tests %u times ***", caller, amount);
+	DMINFO("%s - Joe's bloom hash1=%lu jiffies", caller, test_joes_bloom_hash1(amount));
+	DMINFO("%s - Joe's bloom hash2=%lu jiffies", caller, test_joes_bloom_hash2(amount));
+	DMINFO("%s - Joe's bloom hash1and2=%lu jiffies", caller, test_joes_bloom_hash1and2(amount));
+	DMINFO("%s - bloom fnv hash=%lu jiffies", caller, test_bloom_fnv_hash(amount));
+	DMINFO("%s - 512MB array linear access=%lu jiffies", caller, test_512m_array_linear(amount));
+	DMINFO("%s - 512MB array random access=%lu jiffies", caller, test_512m_array_random(amount));
+return; 
 	DMINFO("%s - spin_lock()=%lu jiffies", caller,  test_spin_lock(amount));
 	DMINFO("%s - spin_lock_irq()=%lu jiffies", caller, test_spin_lock_irq(amount));
 	DMINFO("%s - spin_lock_irqsave()=%lu jiffies", caller, test_spin_lock_irqsave(amount));
@@ -185,6 +483,7 @@ static int __init timing_tests_init(void)
 	DMINFO("%s - --> starting tests <--", __func__);
 	smp_wmb();
 	perform_tests("init (standalone)");
+return 0;
 	INIT_WORK(&worker1, do_work);
 	INIT_WORK(&worker2, do_work);
 	smp_wmb();
