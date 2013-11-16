@@ -159,6 +159,7 @@ struct cache_stats {
 	atomic_t bw_migrations_lt_inflight;
 	atomic_t no_bw_migrations_lt_inflight;
 	atomic_t bw_declined;
+	atomic_t migration_congested;
 #endif
 };
 
@@ -1371,13 +1372,17 @@ static void init_latency(struct cache *cache, unsigned t, unsigned latency)
 	cache->latency[t].prev_avg = latency;
 }
 
-static bool migration_is_congested(struct cache *cache)
+static bool migration_is_congested(struct cache *cache, bool priority)
 {
 	struct request_queue *qc = bdev_get_queue(cache->cache_dev->bdev);
 	struct request_queue *qo = bdev_get_queue(cache->origin_dev->bdev);
 
-	return bdi_rw_congested(&qc->backing_dev_info) ||
-	       bdi_rw_congested(&qo->backing_dev_info);
+	if (priority)
+		return bdi_rw_congested(&qc->backing_dev_info) ||
+		       bdi_rw_congested(&qo->backing_dev_info);
+	else 
+		return bdi_read_congested(&qc->backing_dev_info) ||
+		       bdi_write_congested(&qo->backing_dev_info);
 }
 
 /*
@@ -1387,9 +1392,13 @@ static void calculate_average_latency(struct cache *cache, unsigned *latency)
 {
 	unsigned avg, nr, t;
 	unsigned long j = jiffies;
-	bool reset = unlikely(time_after(j, cache->reset_migration_accounting));
+	bool reset;
 
-	BUG_ON(in_interrupt());
+	if (unlikely(time_after(j, cache->reset_migration_accounting))) {
+		reset = true;
+		cache->reset_migration_accounting = j + HZ;
+	} else
+		reset = false;
 
 	spin_lock_irq(&cache->lock);
 
@@ -1399,17 +1408,14 @@ static void calculate_average_latency(struct cache *cache, unsigned *latency)
 		nr = cache->latency[t].nr;
 		if (nr)
 			avg = (avg + cache->latency[t].us / nr) / (avg ? 2 : 1);
-		else if (unlikely(reset))
+
+		else if (unlikely(reset)) {
 			avg = 0;
+			init_latency(cache, t, avg);
+		}
 
 		latency[t] = avg;
-
-		if (unlikely(reset))
-			init_latency(cache, t, avg);
 	}
-
-	if (unlikely(reset))
-		cache->reset_migration_accounting = j + HZ;
 
 	spin_unlock_irq(&cache->lock);
 }
@@ -1431,18 +1437,19 @@ static bool spare_migration_bandwidth(struct cache *cache, bool priority)
 		return true;
 	}
 
-	/* FIXME: distinguish read+writes. */
-	if (migration_is_congested(cache))
+	/* FIXME: distinguish read+writes better. */
+	if (migration_is_congested(cache, priority)) {
+		atomic_inc(&cache->stats.migration_congested);
 		return false;
-
-	calculate_average_latency(cache, latency);
-
-	if (latency[t_bios] + latency[t_migrations] > 500000U);
-		return false;
+	}
 
 	/* FIXME: REMOVEME: safety net. */
-	if (atomic_read(&cache->nr_demopromo_migrations) + atomic_read(&cache->nr_writeback_migrations) > 255)
+	if (atomic_read(&cache->nr_demopromo_migrations) + atomic_read(&cache->nr_writeback_migrations) > 255) {
+		atomic_inc(&cache->stats.bw_declined);
 		return false;
+	}
+
+	calculate_average_latency(cache, latency);
 
 #if DEBUG_TARGET
 	if (latency[t_bios]) {
@@ -1736,7 +1743,6 @@ static void writeback_some_dirty_blocks(struct cache *cache)
 		}
 
 		writeback(cache, &structs, oblock, cblock, old_ocell);
-break; // FIXME: flurry of writebacks.
 	}
 
 	prealloc_free_structs(cache, &structs);
@@ -2604,6 +2610,7 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	atomic_set(&cache->stats.bw_migrations_lt_inflight, 0);
 	atomic_set(&cache->stats.no_bw_migrations_lt_inflight, 0);
 	atomic_set(&cache->stats.bw_declined, 0);
+	atomic_set(&cache->stats.migration_congested, 0);
 #endif
 
 	*result = cache;
@@ -3110,7 +3117,7 @@ static void cache_status(struct dm_target *ti, status_type_t type,
 		smp_rmb();
 #if DEBUG_TARGET
 		/* FIXME: REMOVEME: devel */
-		DMEMIT("%llu/%llu %u %u %u %u %u %u %llu %u **%u/%u %u/%u %u %u/%u,%u/%u %u** ",
+		DMEMIT("%llu/%llu %u %u %u %u %u %u %llu %u **%u/%u %u/%u %u %u/%u,%u/%u %u/%u** ",
 		       (unsigned long long)(nr_blocks_metadata - nr_free_blocks_metadata),
 		       (unsigned long long)nr_blocks_metadata,
 		       (unsigned) atomic_read(&cache->stats.read_hit),
@@ -3130,7 +3137,8 @@ static void cache_status(struct dm_target *ti, status_type_t type,
 		       (unsigned) atomic_read(&cache->stats.no_bw_priority),
 		       (unsigned) atomic_read(&cache->stats.bw_migrations_lt_inflight),
 		       (unsigned) atomic_read(&cache->stats.no_bw_migrations_lt_inflight),
-		       (unsigned) atomic_read(&cache->stats.bw_declined));
+		       (unsigned) atomic_read(&cache->stats.bw_declined),
+		       (unsigned) atomic_read(&cache->stats.migration_congested));
 #else
 		DMEMIT("%llu/%llu %u %u %u %u %u %u %llu %u ",
 		       (unsigned long long)(nr_blocks_metadata - nr_free_blocks_metadata),
