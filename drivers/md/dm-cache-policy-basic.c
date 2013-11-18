@@ -227,7 +227,7 @@ struct basic_policy {
 	struct io_tracker tracker;
 
 	sector_t origin_size, block_size;
-	unsigned block_shift, calc_threshold_hits, promote_threshold[2], hits;
+	unsigned block_shift, promote_threshold[2], hits;
 
 	struct {
 		/* add/del/evict entry abstractions. */
@@ -637,27 +637,54 @@ static unsigned ctype_threshold(struct basic_policy *basic, unsigned th)
 	return th << (basic->queues.ctype == T_HITS ? 0 : basic->block_shift);
 }
 
-static void init_promote_threshold(struct basic_policy *basic, bool cache_full)
+#define	MAX_TO_AVERAGE	10
+static bool sum_up(struct basic_policy *basic, struct basic_cache_entry *e, unsigned *total, unsigned *nr)
 {
-	basic->promote_threshold[0] = ctype_threshold(basic, READ_PROMOTE_THRESHOLD);
-	basic->promote_threshold[1] = ctype_threshold(basic, WRITE_PROMOTE_THRESHOLD);
+	unsigned rw;
 
-	if (cache_full) {
-		basic->promote_threshold[0] += ((basic->cache_count[basic->queues.ctype][0] * READ_PROMOTE_THRESHOLD) << 5) / from_cblock(basic->cache_size);
-		basic->promote_threshold[1] += ((basic->cache_count[basic->queues.ctype][1] * WRITE_PROMOTE_THRESHOLD) << 6) / from_cblock(basic->cache_size);
-	}
+	for (rw = 0; rw < 2; rw++)
+		total[rw] += e->ce.count[basic->queues.ctype][rw];
+
+	if (++*nr == MAX_TO_AVERAGE)
+		return true;
+
+	return false;
 }
 
 static void calc_rw_threshold(struct basic_policy *basic)
 {
-	if (++basic->hits > basic->calc_threshold_hits && !any_free_cblocks(basic)) {
-		basic->hits = 0;
-		init_promote_threshold(basic, true);
+	if (++basic->hits >= (MAX_TO_AVERAGE << 4)) {
+		unsigned nr = 0, rw, total[2] = { 0, 0 };
+		struct basic_cache_entry *e;
 
-/* FIXME:
+		basic->hits = 0;
+
+		if (IS_MULTIQUEUE(basic)) {
+			list_for_each_entry_reverse(e, &basic->queues.mq[basic->queues.nr_mqueues - 1], ce.list)
+				if (sum_up(basic, e, total, &nr))
+					break;
+
+		} else {
+			list_for_each_entry_reverse(e, &basic->queues.walk, walk)
+				if (sum_up(basic, e, total, &nr))
+					break;
+		}
+
+		for (rw = 0; rw < 2; rw++)
+			basic->promote_threshold[rw] = nr ? total[rw] / nr : 0 +
+						       ctype_threshold(basic, rw ? WRITE_PROMOTE_THRESHOLD :
+										   READ_PROMOTE_THRESHOLD);
+#if 0
+		{
+			basic->promote_threshold[rw] = nr ? total[rw] / nr : ctype_threshold(basic, 1);
+			basic->promote_threshold[rw] = max(basic->promote_threshold[rw], ctype_threshold(basic, rw ? WRITE_PROMOTE_THRESHOLD : READ_PROMOTE_THRESHOLD));
+		}
+#endif
+
+#if 0
 		pr_alert("promote thresholds = %u/%u queue stats = %u/%u\n",
 			 basic->promote_threshold[0], basic->promote_threshold[1], basic->queues.pre.size, basic->queues.post.size);
-*/
+#endif
 	}
 }
 
@@ -1292,16 +1319,17 @@ static bool should_promote(struct basic_policy *basic, struct track_queue_entry 
 			   dm_oblock_t oblock, int rw, bool discarded_oblock,
 			   struct policy_result *result)
 {
-	BUG_ON(!tqe);
-	calc_rw_threshold(basic);
-
-	if (discarded_oblock && any_free_cblocks(basic))
+	if (discarded_oblock && any_free_cblocks(basic)) {
 		/*
 		 * We don't need to do any copying at all, so give this a
 		 * very low threshold.  In practice this only triggers
 		 * during initial population after a format.
 		 */
 		return true;
+	}
+
+	BUG_ON(!tqe);
+	calc_rw_threshold(basic);
 
 	return tqe->ce.count[basic->queues.ctype][rw] >= basic->promote_threshold[rw];
 }
@@ -1330,17 +1358,18 @@ static int map(struct basic_policy *basic, dm_oblock_t oblock,
 	if (in_cache(basic, oblock, bio, result))
 		return 0;
 
-	if (!IS_DUMB(basic))
-		/* Record hits on pre cache track queue. */
-		tqe = update_track_queue(basic, &basic->queues.pre, oblock, rw, 1, bio_sectors(bio));
-
 	if (!can_migrate)
 		return -EWOULDBLOCK;
 
-	else if (!IS_DUMB(basic) && iot_sequential_pattern(&basic->tracker))
-		;
+	if (!IS_DUMB(basic)) {
+		if (iot_sequential_pattern(&basic->tracker))
+			return -EWOULDBLOCK;
 
-	else if (IS_DUMB(basic) || should_promote(basic, tqe, oblock, rw, discarded_oblock, result))
+		/* Record hits on pre cache track queue. */
+		tqe = update_track_queue(basic, &basic->queues.pre, oblock, rw, 1, bio_sectors(bio));
+	}
+
+	if (IS_DUMB(basic) || should_promote(basic, tqe, oblock, rw, discarded_oblock, result))
 		get_cache_block(basic, oblock, bio, result);
 
 	return 0;
@@ -1362,6 +1391,7 @@ static int basic_map(struct dm_cache_policy *p, dm_oblock_t oblock,
 	else if (!mutex_trylock(&basic->lock))
 		return -EWOULDBLOCK;
 
+	smp_rmb();
 	basic->tick = basic->tick_extern;
 
 	if (!IS_DUMB(basic) && !IS_NOOP(basic))
@@ -1800,9 +1830,9 @@ static struct dm_cache_policy *basic_policy_create(dm_cblock_t cache_size,
 	basic->block_size = block_size;
 	basic->block_shift = ffs(block_size);
 	basic->origin_size = origin_size;
-	basic->calc_threshold_hits = max(from_cblock(cache_size) >> 2, 128U);
 	basic->queues.ctype = T_HITS;
-	init_promote_threshold(basic, false);
+	basic->promote_threshold[0] = ctype_threshold(basic, READ_PROMOTE_THRESHOLD);
+	basic->promote_threshold[1] = ctype_threshold(basic, WRITE_PROMOTE_THRESHOLD);
 	mutex_init(&basic->lock);
 	queue_init(&basic->queues.free);
 	queue_init(&basic->queues.used);
