@@ -298,6 +298,21 @@ static uint64_t hash3(uint32_t b)
 	return n;
 }
 
+/* 64 bit Murmur 3 */
+static uint64_t hash4(uint64_t b)
+{
+	uint64_t n = b;
+
+	n ^= n >> 33;
+	n *= 0xff51afd7ed558ccdUL;
+	n ^= n >> 33;
+	n *= 0xc4ceb9fe1a85ec53UL;
+	n ^= n >> 33;
+
+	return n;
+}
+
+
 static unsigned long test_joes_bloom_hash1(unsigned c)
 {
 	unsigned long start, r;
@@ -368,6 +383,25 @@ static unsigned long test_bloom_fnv_hash(unsigned c)
 	start = jiffies;
 	while (c--)
 		set_bit(hash3(64) & 0x0F, pbs);
+
+	r = jiffies - start;
+
+	disable_local();
+
+	return r;
+}
+
+static unsigned long test_64bit_murmur3(unsigned c)
+{
+	unsigned long start, r;
+	uint64_t bs = 0;
+	unsigned long *pbs = (unsigned long *) &bs;
+
+	enforce_local();
+
+	start = jiffies;
+	while (c--)
+		set_bit(hash4(64) & 0x0F, pbs);
 
 	r = jiffies - start;
 
@@ -447,6 +481,7 @@ static void perform_tests(const char *caller)
 	DMINFO("%s - Joe's bloom hash1=%lu jiffies", caller, test_joes_bloom_hash1(amount));
 	DMINFO("%s - Joe's bloom hash2=%lu jiffies", caller, test_joes_bloom_hash2(amount));
 	DMINFO("%s - Joe's bloom hash1and2=%lu jiffies", caller, test_joes_bloom_hash1and2(amount));
+	DMINFO("%s - 64bit Murmur 3 hash=%lu jiffies", caller, test_64bit_murmur3(amount));
 	DMINFO("%s - bloom fnv hash=%lu jiffies", caller, test_bloom_fnv_hash(amount));
 	DMINFO("%s - 512MB array linear access=%lu jiffies", caller, test_512m_array_linear(amount));
 	DMINFO("%s - 512MB array random access=%lu jiffies", caller, test_512m_array_random(amount));
