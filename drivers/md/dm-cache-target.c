@@ -208,7 +208,16 @@ struct cache {
 	 */
 	uint32_t sectors_per_block;
 	sector_t sectors_per_block_mask;
-	int sectors_per_block_shift;
+	unsigned sectors_per_block_shift;
+
+	/*
+	 * Function pointers avoiding slower conditionals.
+	 */
+	struct cache_fns {
+		void (*remap_to_cache)(struct cache *, struct bio *, dm_cblock_t);
+		dm_oblock_t (*get_bio_block)(struct cache *, struct bio *);
+		uint32_t (*oblock_to_dblock)(struct cache *cache);
+	} fns;
 
 	spinlock_t lock;
 	struct bio_list deferred_bios;
@@ -511,11 +520,6 @@ static void clear_dirty(struct cache *cache, dm_oblock_t oblock, dm_cblock_t cbl
 
 /*----------------------------------------------------------------*/
 
-static bool block_size_is_power_of_two(struct cache *cache)
-{
-	return cache->sectors_per_block_shift >= 0;
-}
-
 /* gcc on ARM generates spurious references to __udivdi3 and __umoddi3 */
 #if defined(CONFIG_ARM) && __GNUC__ == 4 && __GNUC_MINOR__ <= 6
 __always_inline
@@ -527,15 +531,20 @@ static dm_block_t block_div(dm_block_t b, uint32_t n)
 	return b;
 }
 
+static uint32_t oblock_to_dblock_power_of_two(struct cache *cache)
+{
+	return cache->discard_block_size >> cache->sectors_per_block_shift;
+}
+
+static uint32_t oblock_to_dblock_non_power_of_two(struct cache *cache)
+{
+	return cache->discard_block_size / cache->sectors_per_block;
+}
+
 static dm_dblock_t oblock_to_dblock(struct cache *cache, dm_oblock_t oblock)
 {
-	uint32_t discard_blocks = cache->discard_block_size;
+	uint32_t discard_blocks = cache->fns.oblock_to_dblock(cache);
 	dm_block_t b = from_oblock(oblock);
-
-	if (!block_size_is_power_of_two(cache))
-		discard_blocks = discard_blocks / cache->sectors_per_block;
-	else
-		discard_blocks >>= cache->sectors_per_block_shift;
 
 	b = block_div(b, discard_blocks);
 
@@ -647,18 +656,26 @@ static void remap_to_origin(struct cache *cache, struct bio *bio)
 	bio->bi_bdev = cache->origin_dev->bdev;
 }
 
+static void remap_to_cache_power_of_two(struct cache *cache, struct bio *bio,
+					dm_cblock_t cblock)
+{
+	bio->bi_sector = (from_cblock(cblock) << cache->sectors_per_block_shift) |
+			 (bio->bi_sector & cache->sectors_per_block_mask);
+}
+
+static void remap_to_cache_non_power_of_two(struct cache *cache,
+					    struct bio *bio,
+					    dm_cblock_t cblock)
+{
+	bio->bi_sector = (from_cblock(cblock) * cache->sectors_per_block) +
+			 sector_div(bio->bi_sector, cache->sectors_per_block);
+}
+
 static void remap_to_cache(struct cache *cache, struct bio *bio,
 			   dm_cblock_t cblock)
 {
-	sector_t bi_sector = bio->bi_sector;
-
 	bio->bi_bdev = cache->cache_dev->bdev;
-	if (block_size_is_power_of_two(cache))
-		bio->bi_sector = (from_cblock(cblock) << cache->sectors_per_block_shift) |
-				 (bi_sector & cache->sectors_per_block_mask);
-	else
-		bio->bi_sector = (from_cblock(cblock) * cache->sectors_per_block) +
-				 sector_div(bi_sector, cache->sectors_per_block);
+	cache->fns.remap_to_cache(cache, bio, cblock);
 }
 
 /* Don't call from interrupt context! */
@@ -700,16 +717,23 @@ static void remap_to_cache_dirty(struct cache *cache, struct bio *bio,
 	}
 }
 
-static dm_oblock_t get_bio_block(struct cache *cache, struct bio *bio)
+static dm_oblock_t get_bio_block_power_of_two(struct cache *cache, struct bio *bio)
+{
+	return to_oblock(bio->bi_sector >> cache->sectors_per_block_shift);
+}
+
+static dm_oblock_t get_bio_block_non_power_of_two(struct cache *cache, struct bio *bio)
 {
 	sector_t block_nr = bio->bi_sector;
 
-	if (!block_size_is_power_of_two(cache))
-		(void) sector_div(block_nr, cache->sectors_per_block);
-	else
-		block_nr >>= cache->sectors_per_block_shift;
+	(void) sector_div(block_nr, cache->sectors_per_block);
 
 	return to_oblock(block_nr);
+}
+
+static dm_oblock_t get_bio_block(struct cache *cache, struct bio *bio)
+{
+	return cache->fns.get_bio_block(cache, bio);
 }
 
 static int bio_triggers_commit(struct cache *cache, struct bio *bio)
@@ -2464,12 +2488,18 @@ static int cache_create(struct cache_args *ca, struct cache **result)
 	if (ca->block_size & (ca->block_size - 1)) {
 		dm_block_t cache_size = ca->cache_sectors;
 
-		cache->sectors_per_block_shift = -1;
+		cache->sectors_per_block_shift = 0;
 		cache_size = block_div(cache_size, ca->block_size);
 		cache->cache_size = to_cblock(cache_size);
+		cache->fns.remap_to_cache = remap_to_cache_non_power_of_two;
+		cache->fns.get_bio_block = get_bio_block_non_power_of_two;
+		cache->fns.oblock_to_dblock = oblock_to_dblock_non_power_of_two;
 	} else {
 		cache->sectors_per_block_shift = __ffs(ca->block_size);
 		cache->cache_size = to_cblock(ca->cache_sectors >> cache->sectors_per_block_shift);
+		cache->fns.remap_to_cache = remap_to_cache_power_of_two;
+		cache->fns.get_bio_block = get_bio_block_power_of_two;
+		cache->fns.oblock_to_dblock = oblock_to_dblock_power_of_two;
 	}
 
 	r = create_cache_policy(cache, ca, error);
