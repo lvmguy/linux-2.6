@@ -761,23 +761,23 @@ static unsigned int __delta_usecs_wrapsave(unsigned long start_jiffies)
 	return jiffies_to_usecs(r);
 }
 
-static void __account_jiffies(struct cache *cache, unsigned t, unsigned long start_jiffies)
+static void __account_time(struct cache *cache, unsigned t, unsigned long start_jiffies)
 {
 	cache->latency[t].us += __delta_usecs_wrapsave(start_jiffies);
 	cache->latency[t].nr++;
 }
 
-static void account_bio_jiffies(struct cache *cache, struct bio *bio)
+static void account_bio_time(struct cache *cache, struct bio *bio)
 {
 	union map_info *mi = dm_get_mapinfo(bio);
 	unsigned long start_jiffies = mi->ll;
 
-	__account_jiffies(cache, t_bios, start_jiffies);
+	__account_time(cache, t_bios, start_jiffies);
 }
 
-static void account_migration_jiffies(struct dm_cache_migration *mg)
+static void account_migration_time(struct dm_cache_migration *mg)
 {
-	__account_jiffies(mg->cache, t_migrations, mg->jiffies);
+	__account_time(mg->cache, t_migrations, mg->jiffies);
 }
 
 /* Don't call from interrupt context! */
@@ -829,7 +829,7 @@ static void writethrough_endio(struct bio *bio, int err)
 	remap_to_cache(pb->cache, bio, pb->cblock);
 
 	spin_lock(&pb->cache->lock);
-	account_bio_jiffies(pb->cache, bio);
+	account_bio_time(pb->cache, bio);
 	spin_unlock(&pb->cache->lock);
 
 	/*
@@ -1048,7 +1048,7 @@ static void copy_complete(int read_err, unsigned long write_err, void *context)
 	BUG_ON(in_interrupt());
 
 	spin_lock_irq(&cache->lock);
-	account_migration_jiffies(mg);
+	account_migration_time(mg);
 	list_add_tail(&mg->list, &cache->completed_migrations);
 	spin_unlock_irq(&cache->lock);
 
@@ -1102,7 +1102,7 @@ static void overwrite_endio(struct bio *bio, int err)
 	spin_lock(&cache->lock);
 	list_add_tail(&mg->list, &cache->completed_migrations);
 	unhook_bio(&pb->hook_info, bio);
-	account_bio_jiffies(cache, bio);
+	account_bio_time(cache, bio);
 	mg->requeue_holder = false;
 	spin_unlock(&cache->lock);
 
@@ -1414,13 +1414,14 @@ static bool migration_is_congested(struct cache *cache, bool priority)
  */
 static void calculate_average_latency(struct cache *cache, unsigned *latency)
 {
-	unsigned avg, nr, t;
+	unsigned act, nr, prev, t;
 	unsigned long j = jiffies;
 	bool reset;
 
 	if (unlikely(time_after(j, cache->reset_migration_accounting))) {
 		reset = true;
 		cache->reset_migration_accounting = j + HZ;
+
 	} else
 		reset = false;
 
@@ -1428,17 +1429,13 @@ static void calculate_average_latency(struct cache *cache, unsigned *latency)
 
 	/* Calculate average latency and reset after timeout to take new samples. */
 	for (t = 0; t < t_size; t++) {
-		avg = cache->latency[t].prev_avg;
 		nr = cache->latency[t].nr;
-		if (nr)
-			avg = (avg + cache->latency[t].us / nr) / (avg ? 2 : 1);
+		act = nr ? cache->latency[t].us / nr : 0;
+		prev = cache->latency[t].prev_avg;
+		latency[t] = act ? act : prev;
 
-		else if (unlikely(reset)) {
-			avg = 0;
-			init_latency(cache, t, avg);
-		}
-
-		latency[t] = avg;
+		if (unlikely(reset))
+			init_latency(cache, t, act);
 	}
 
 	spin_unlock_irq(&cache->lock);
@@ -2844,7 +2841,7 @@ static int cache_end_io(struct dm_target *ti, struct bio *bio, int error)
 	unsigned long flags;
 
 	spin_lock_irqsave(&cache->lock, flags);
-	account_bio_jiffies(cache, bio);
+	account_bio_time(cache, bio);
 
 	if (pb->tick) {
 		policy_tick(cache->policy);
