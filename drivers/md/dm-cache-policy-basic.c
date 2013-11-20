@@ -37,8 +37,8 @@
 #define DM_MSG_PREFIX "cache-policy-basic"
 
 /* Cache input queue defines. */
-#define	READ_PROMOTE_THRESHOLD	1U	/* Minimum read cache in queue promote per element threshold. */
-#define	WRITE_PROMOTE_THRESHOLD	2U	/* Minimum write cache in queue promote per element threshold. */
+#define	READ_PROMOTE_THRESHOLD	4U	/* Minimum read cache in queue promote per element threshold. */
+#define	WRITE_PROMOTE_THRESHOLD	8U	/* Minimum write cache in queue promote per element threshold. */
 
 /* Default "multiqueue" queue timeout. */
 #define	MQ_QUEUE_TMO_DEFAULT	(600UL * HZ)	/* Default seconds queue maximum lifetime per entry. FIXME: dynamic? */
@@ -133,16 +133,17 @@ struct common_entry {
 	struct list_head list;
 	dm_oblock_t oblock;
 	unsigned count[2][2];
+	unsigned tick;
 };
 
 /* Cache entry struct. */
 struct basic_cache_entry {
 	struct common_entry ce;
-	struct list_head walk, dirty;
 
+	struct list_head walk, dirty;
 	dm_cblock_t cblock;
-	unsigned long access, expire;
-	unsigned tick, saved;
+	unsigned long expire;
+	unsigned saved;
 };
 
 /* Pre and post cache queue entry. */
@@ -650,15 +651,12 @@ static bool sum_up(struct basic_policy *basic, struct basic_cache_entry *e, unsi
 	for (rw = 0; rw < 2; rw++)
 		*total += e->ce.count[basic->queues.ctype][rw];
 
-	if (++*nr == MAX_TO_AVERAGE)
-		return true;
-
-	return false;
+	return ++*nr == MAX_TO_AVERAGE;
 }
 
 static void calc_rw_threshold(struct basic_policy *basic)
 {
-	if (++basic->hits) { //  > MAX_TO_AVERAGE) {
+	if (++basic->hits) { //  > MAX_TO_AVERAGE - 1) {
 		unsigned nr = 0, rw, total = 0;
 		struct basic_cache_entry *e;
 
@@ -678,23 +676,11 @@ static void calc_rw_threshold(struct basic_policy *basic)
 				if (sum_up(basic, e, &total, &nr))
 					goto out;
 		}
+
 out:
-		for (rw = 0; rw < 2; rw++) {
-			unsigned th = ctype_threshold(basic, rw);
+		for (rw = 0; rw < 2; rw++)
+			basic->promote_threshold[rw] = ctype_threshold(basic, rw) + nr ? total / nr : 0;
 
-			if (nr) {
-				basic->promote_threshold[rw] = total / nr;
-
-				if (basic->promote_threshold[rw] > th)
-					basic->promote_threshold[rw] -= th;
-
-			} else
-				basic->promote_threshold[rw] = th;
-
-			// if (basic->promote_threshold[rw] * nr < total / 2)
-			if (basic->promote_threshold[rw] * nr < total)
-				basic->promote_threshold[rw] += th;
-		}
 #if 0
 		pr_alert("promote thresholds = %u/%u queue stats = %u/%u\n",
 			 basic->promote_threshold[0], basic->promote_threshold[1], basic->queues.pre.size, basic->queues.post.size);
@@ -702,6 +688,13 @@ out:
 	}
 }
 
+/*
+ * Has this entry already been updated?
+ */
+static bool updated_this_tick(struct basic_policy *basic, struct common_entry *ce)
+{
+	return ce->tick == basic->tick;
+}
 /* Add or update track queue entry. */
 static struct track_queue_entry *
 update_track_queue(struct basic_policy *basic, struct track_queue *q, dm_oblock_t oblock,
@@ -709,13 +702,19 @@ update_track_queue(struct basic_policy *basic, struct track_queue *q, dm_oblock_
 {
 	struct track_queue_entry *r = lookup_track_queue_entry(q, oblock);
 
+#define SINGLE_COUNT	1
 /* FIXME: TESTME: */
+#if SINGLE_COUNT
 rw = 0;
+#endif
 
-	if (r)
+	if (r) {
+		if (updated_this_tick(basic, &r->ce))
+			return r;
+
 		queue_move_tail(&q->used, &r->ce.list);
 
-	else {
+	} else {
 		r = pop_add_and_insert_track_queue_entry(q, oblock);
 		BUG_ON(!r);
 	}
@@ -1178,7 +1177,7 @@ static void alloc_cblock_insert_cache_and_count_entry(struct basic_policy *basic
 	unsigned t, u, end = ARRAY_SIZE(e->ce.count[T_HITS]);
 
 	alloc_cblock(basic, e->cblock);
-	e->tick = basic->tick;
+	e->ce.tick = basic->tick;
 	insert_cache_hash_entry(basic, e);
 
 	if (IS_DUMB(basic) || IS_NOOP(basic))
@@ -1195,13 +1194,6 @@ static void add_cache_entry(struct basic_policy *basic, struct basic_cache_entry
 	alloc_cblock_insert_cache_and_count_entry(basic, e);
 }
 
-/*
- * Has this entry already been updated?
- */
-static bool updated_this_tick(struct basic_policy *basic, struct basic_cache_entry *e)
-{
-	return e->tick == basic->tick;
-}
 
 static void remove_cache_entry(struct basic_policy *basic, struct basic_cache_entry *e)
 {
@@ -1240,7 +1232,7 @@ static void update_cache_entry(struct basic_policy *basic, struct basic_cache_en
 	result->op = POLICY_HIT;
 	result->cblock = e->cblock;
 
-	if (updated_this_tick(basic, e))
+	if (updated_this_tick(basic, &e->ce))
 		return;
 
 	if (IS_DUMB(basic) || IS_NOOP(basic))
@@ -1249,7 +1241,11 @@ static void update_cache_entry(struct basic_policy *basic, struct basic_cache_en
 	rw = to_rw(bio);
 
 /* FIXME: TESTME: */
+#if SINGLE_COUNT
 rw = 0;
+#endif
+
+	e->ce.tick = basic->tick;
 
 	e->ce.count[T_HITS][rw]++;
 	e->ce.count[T_SECTORS][rw] += bio_sectors(bio);
@@ -1271,7 +1267,9 @@ static void get_cache_block(struct basic_policy *basic, dm_oblock_t oblock, stru
 	struct basic_cache_entry *e;
 
 /* FIXME: TESTME: */
+#if SINGLE_COUNT
 rw = 0;
+#endif
 
 	if (queue_empty(&basic->queues.free)) {
 		if (IS_MULTIQUEUE(basic))
@@ -1342,6 +1340,8 @@ static bool should_promote(struct basic_policy *basic, struct track_queue_entry 
 			   dm_oblock_t oblock, int rw, bool discarded_oblock,
 			   struct policy_result *result)
 {
+	calc_rw_threshold(basic);
+
 	if (discarded_oblock && any_free_cblocks(basic)) {
 		/*
 		 * We don't need to do any copying at all, so give this a
@@ -1351,12 +1351,12 @@ static bool should_promote(struct basic_policy *basic, struct track_queue_entry 
 		return true;
 	}
 
-	BUG_ON(!tqe);
-	calc_rw_threshold(basic);
-
 /* FIXME: TESTME: */
+#if SINGLE_COUNT
 rw = 0;
+#endif
 
+	BUG_ON(!tqe);
 	return tqe->ce.count[basic->queues.ctype][rw] >= basic->promote_threshold[rw];
 }
 
