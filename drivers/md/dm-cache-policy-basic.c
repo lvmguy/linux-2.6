@@ -642,7 +642,7 @@ static unsigned ctype_threshold(struct basic_policy *basic, unsigned rw)
 #endif
 }
 
-#define	MAX_TO_AVERAGE	10
+#define	MAX_TO_AVERAGE	5
 static bool sum_up(struct basic_policy *basic, struct basic_cache_entry *e, unsigned *total, unsigned *nr)
 {
 	unsigned rw;
@@ -695,18 +695,6 @@ out:
 			if (basic->promote_threshold[rw] * nr < total)
 				basic->promote_threshold[rw] += th;
 		}
-#if 0
-			/* Way too many promotions. */
-			basic->promote_threshold[rw] = max(nr ? (total / nr) >> 1 : 0,  ctype_threshold(basic, rw));
-#endif
-
-#if 0
-		{
-			basic->promote_threshold[rw] = nr ? total[rw] / nr : ctype_threshold(basic, 1);
-			basic->promote_threshold[rw] = max(basic->promote_threshold[rw], ctype_threshold(basic, rw ? WRITE_PROMOTE_THRESHOLD : READ_PROMOTE_THRESHOLD));
-		}
-#endif
-
 #if 0
 		pr_alert("promote thresholds = %u/%u queue stats = %u/%u\n",
 			 basic->promote_threshold[0], basic->promote_threshold[1], basic->queues.pre.size, basic->queues.post.size);
