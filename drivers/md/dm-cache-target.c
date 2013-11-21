@@ -745,13 +745,13 @@ static void __generic_make_request(struct bio *bio)
 {
 	union map_info *mi = dm_get_mapinfo(bio);
 
-	mi->ll = jiffies;
+	mi->ll = get_jiffies_64();
 	generic_make_request(bio);
 }
 
 static unsigned int __delta_usecs_wrapsave(unsigned long start_jiffies)
 {
-	unsigned long j = jiffies, r;
+	unsigned long j = get_jiffies_64(), r;
 
 	if (unlikely(j < start_jiffies))
 		r = ULONG_MAX - start_jiffies + j;
