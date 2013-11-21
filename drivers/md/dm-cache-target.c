@@ -1420,7 +1420,7 @@ static void calculate_average_latency(struct cache *cache, unsigned *latency)
 
 	if (unlikely(time_after(j, cache->reset_migration_accounting))) {
 		reset = true;
-		cache->reset_migration_accounting = j + HZ;
+		cache->reset_migration_accounting = j + 5 * HZ;
 
 	} else
 		reset = false;
